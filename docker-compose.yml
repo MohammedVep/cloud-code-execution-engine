@@ -1,0 +1,52 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: ccee-redis
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    container_name: ccee-api
+    environment:
+      API_PORT: 8080
+      REDIS_URL: redis://redis:6379
+      JOB_QUEUE_NAME: code-jobs
+      JOB_TTL_SECONDS: 86400
+      JOB_HISTORY_MAX: 500
+      JOB_LIST_DEFAULT_LIMIT: 20
+      JOB_LIST_MAX_LIMIT: 100
+      AUDIT_STREAM_KEY: audit:events
+      DAILY_QUOTA_TTL_SECONDS: 172800
+      QUEUE_JOB_ATTEMPTS: 3
+      QUEUE_RETRY_BACKOFF_MS: 1000
+      ANALYSIS_MAX_SOURCE_CHARS: 8000
+      TENANT_API_KEYS_JSON: '{"dev-local-key":{"tenantId":"tenant-dev","maxConcurrentJobs":5,"maxDailyJobs":1000}}'
+    ports:
+      - "8080:8080"
+    depends_on:
+      - redis
+
+  worker:
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile
+    container_name: ccee-worker
+    environment:
+      REDIS_URL: redis://redis:6379
+      JOB_QUEUE_NAME: code-jobs
+      JOB_TTL_SECONDS: 86400
+      WORKER_CONCURRENCY: 4
+      QUEUE_JOB_ATTEMPTS: 3
+      QUEUE_RETRY_BACKOFF_MS: 1000
+      EXECUTION_BACKEND: local
+      RUNNER_IMAGE: ccee-runner:local
+      MAX_STDIO_BYTES: 65536
+      AUDIT_STREAM_KEY: audit:events
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - redis

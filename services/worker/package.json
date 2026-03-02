@@ -1,0 +1,21 @@
+{
+  "name": "@ccee/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-ecs": "^3.758.0",
+    "@ccee/common": "0.1.0",
+    "bullmq": "^5.46.1",
+    "ioredis": "^5.4.2",
+    "tsx": "^4.19.3",
+    "zod": "^3.24.2"
+  }
+}

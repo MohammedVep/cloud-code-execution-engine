@@ -1,0 +1,942 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cloud Code Execution Engine | Recruiter Brief</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Sora:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #f4f7f7;
+        --panel: #ffffff;
+        --panel-soft: #eef4f3;
+        --ink: #0d1b1e;
+        --ink-muted: #476066;
+        --line: #d7e2df;
+        --accent: #0f8b8d;
+        --accent-2: #ff7a3d;
+        --ok: #18794e;
+        --warn: #b35f00;
+        --error: #c23434;
+        --shadow: 0 20px 70px -34px rgba(4, 35, 40, 0.34);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Sora", "Segoe UI", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at 85% 5%, rgba(255, 122, 61, 0.23), transparent 26%),
+          radial-gradient(circle at 10% 0%, rgba(15, 139, 141, 0.26), transparent 32%),
+          linear-gradient(170deg, #f8fbfb 0%, #edf4f3 48%, #f6f3f0 100%);
+      }
+
+      .noise {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        opacity: 0.25;
+        background-image: radial-gradient(rgba(9, 45, 50, 0.11) 0.4px, transparent 0.4px);
+        background-size: 3px 3px;
+        mix-blend-mode: multiply;
+      }
+
+      .shell {
+        width: min(1180px, 92vw);
+        margin: 0 auto;
+        padding: 2rem 0 5rem;
+      }
+
+      .topbar {
+        position: sticky;
+        top: 0.75rem;
+        z-index: 12;
+        backdrop-filter: blur(12px);
+        border: 1px solid color-mix(in srgb, var(--line), transparent 30%);
+        border-radius: 999px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 0.55rem 0.9rem 0.55rem 1.2rem;
+        background: rgba(255, 255, 255, 0.78);
+        box-shadow: 0 10px 32px -25px rgba(8, 43, 46, 0.8);
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 0.65rem;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+      }
+
+      .brand-dot {
+        width: 0.72rem;
+        height: 0.72rem;
+        border-radius: 999px;
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        box-shadow: 0 0 0 6px rgba(15, 139, 141, 0.17);
+      }
+
+      .health-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        border-radius: 999px;
+        padding: 0.35rem 0.75rem;
+        font-size: 0.8rem;
+        font-weight: 600;
+        background: #f0f4f4;
+        color: var(--ink-muted);
+      }
+
+      .health-pill::before {
+        content: "";
+        width: 0.55rem;
+        height: 0.55rem;
+        border-radius: 999px;
+        background: #8ea2a0;
+      }
+
+      .health-pill.ok {
+        background: rgba(24, 121, 78, 0.12);
+        color: var(--ok);
+      }
+
+      .health-pill.ok::before {
+        background: var(--ok);
+      }
+
+      .health-pill.error {
+        background: rgba(194, 52, 52, 0.12);
+        color: var(--error);
+      }
+
+      .health-pill.error::before {
+        background: var(--error);
+      }
+
+      .btn {
+        border: none;
+        border-radius: 999px;
+        cursor: pointer;
+        font: inherit;
+        font-size: 0.86rem;
+        font-weight: 600;
+        padding: 0.55rem 0.95rem;
+        color: white;
+        background: linear-gradient(135deg, #0c7a7c, #0f8b8d);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+      }
+
+      .btn:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 16px 28px -20px rgba(12, 122, 124, 0.9);
+      }
+
+      .btn.secondary {
+        color: var(--ink);
+        background: #e3eceb;
+      }
+
+      .hero {
+        margin-top: 2rem;
+        display: grid;
+        grid-template-columns: 1.1fr 0.9fr;
+        gap: 1.2rem;
+      }
+
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: 1.2rem;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+      }
+
+      .hero-main {
+        padding: 2rem;
+        background:
+          linear-gradient(140deg, rgba(15, 139, 141, 0.08), rgba(255, 122, 61, 0.08)),
+          var(--panel);
+      }
+
+      .kicker {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        padding: 0.38rem 0.72rem;
+        border-radius: 999px;
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 0.78rem;
+        color: var(--ink-muted);
+        background: var(--panel-soft);
+        border: 1px solid var(--line);
+      }
+
+      h1 {
+        margin: 1rem 0 0.9rem;
+        font-size: clamp(1.7rem, 3vw, 2.8rem);
+        line-height: 1.1;
+        letter-spacing: -0.04em;
+      }
+
+      .hero-main p {
+        margin: 0;
+        color: var(--ink-muted);
+        line-height: 1.65;
+        max-width: 56ch;
+      }
+
+      .stats {
+        margin-top: 1.4rem;
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.7rem;
+      }
+
+      .stat {
+        padding: 0.82rem;
+        background: #f8fbfb;
+        border: 1px solid var(--line);
+        border-radius: 0.9rem;
+      }
+
+      .stat strong {
+        display: block;
+        font-size: 1.18rem;
+      }
+
+      .stat span {
+        display: block;
+        font-size: 0.78rem;
+        color: var(--ink-muted);
+      }
+
+      .hero-aside {
+        padding: 1.2rem;
+        display: grid;
+        gap: 0.7rem;
+      }
+
+      .signal {
+        border: 1px solid var(--line);
+        background: #f7fbfb;
+        border-radius: 0.9rem;
+        padding: 0.9rem;
+      }
+
+      .signal h3 {
+        margin: 0 0 0.2rem;
+        font-size: 0.95rem;
+      }
+
+      .signal p {
+        margin: 0;
+        color: var(--ink-muted);
+        font-size: 0.86rem;
+      }
+
+      .section {
+        margin-top: 1.2rem;
+      }
+
+      .section-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1.2rem;
+      }
+
+      .section-title {
+        margin: 0 0 0.75rem;
+        font-size: 1.1rem;
+      }
+
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.7rem;
+      }
+
+      .card {
+        border: 1px solid var(--line);
+        background: #fcfdfd;
+        border-radius: 0.85rem;
+        padding: 0.9rem;
+        transition: transform 0.25s ease, border-color 0.25s ease;
+      }
+
+      .card:hover {
+        transform: translateY(-4px);
+        border-color: color-mix(in srgb, var(--accent), var(--line) 60%);
+      }
+
+      .card h4 {
+        margin: 0 0 0.35rem;
+        font-size: 0.92rem;
+      }
+
+      .card p {
+        margin: 0;
+        color: var(--ink-muted);
+        font-size: 0.82rem;
+        line-height: 1.55;
+      }
+
+      .timeline {
+        display: grid;
+        gap: 0.65rem;
+      }
+
+      .step {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 0.7rem;
+        align-items: start;
+      }
+
+      .step-badge {
+        width: 1.8rem;
+        height: 1.8rem;
+        border-radius: 999px;
+        display: grid;
+        place-items: center;
+        color: white;
+        font-size: 0.8rem;
+        font-family: "IBM Plex Mono", monospace;
+        background: linear-gradient(145deg, var(--accent), #096e70);
+      }
+
+      .step p {
+        margin: 0.2rem 0 0;
+        color: var(--ink-muted);
+        font-size: 0.84rem;
+      }
+
+      .demo {
+        margin-top: 1.2rem;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1.2rem;
+      }
+
+      .demo-panel {
+        padding: 1.15rem;
+      }
+
+      .field {
+        margin-bottom: 0.75rem;
+      }
+
+      .field label {
+        display: block;
+        margin-bottom: 0.35rem;
+        font-size: 0.82rem;
+        color: var(--ink-muted);
+      }
+
+      input,
+      select,
+      textarea {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 0.7rem;
+        padding: 0.62rem 0.7rem;
+        font: inherit;
+        font-size: 0.9rem;
+        color: var(--ink);
+        background: #ffffff;
+      }
+
+      textarea {
+        min-height: 170px;
+        resize: vertical;
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 0.82rem;
+        line-height: 1.5;
+      }
+
+      .row {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.6rem;
+      }
+
+      .actions {
+        display: flex;
+        gap: 0.55rem;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .mono {
+        font-family: "IBM Plex Mono", monospace;
+      }
+
+      .status-box {
+        border: 1px solid var(--line);
+        border-radius: 0.9rem;
+        background: #f9fcfb;
+        padding: 0.8rem;
+        margin-top: 0.75rem;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 0.2rem 0.65rem;
+        font-size: 0.75rem;
+        font-weight: 700;
+        letter-spacing: 0.01em;
+        background: #e8efee;
+        color: #335459;
+      }
+
+      .badge.succeeded {
+        background: rgba(24, 121, 78, 0.14);
+        color: var(--ok);
+      }
+
+      .badge.failed {
+        background: rgba(194, 52, 52, 0.14);
+        color: var(--error);
+      }
+
+      .badge.running,
+      .badge.queued,
+      .badge.retrying,
+      .badge.dispatched {
+        background: rgba(15, 139, 141, 0.15);
+        color: #0c6b6c;
+      }
+
+      pre {
+        margin: 0;
+        overflow-x: auto;
+        white-space: pre-wrap;
+        border-radius: 0.75rem;
+        padding: 0.7rem;
+        background: #0d2024;
+        color: #e4f4f4;
+        font-size: 0.78rem;
+        line-height: 1.5;
+        font-family: "IBM Plex Mono", monospace;
+      }
+
+      .muted {
+        color: var(--ink-muted);
+        font-size: 0.84rem;
+      }
+
+      .reveal {
+        opacity: 0;
+        transform: translateY(14px);
+        animation: rise 0.7s cubic-bezier(0.18, 0.89, 0.32, 1.28) forwards;
+      }
+
+      .reveal.delay-1 {
+        animation-delay: 0.08s;
+      }
+
+      .reveal.delay-2 {
+        animation-delay: 0.16s;
+      }
+
+      .reveal.delay-3 {
+        animation-delay: 0.24s;
+      }
+
+      @keyframes rise {
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      @media (max-width: 980px) {
+        .hero,
+        .section-grid,
+        .demo {
+          grid-template-columns: 1fr;
+        }
+
+        .cards {
+          grid-template-columns: 1fr;
+        }
+
+        .row {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="noise"></div>
+    <main class="shell">
+      <header class="topbar reveal">
+        <div class="brand">
+          <span class="brand-dot"></span>
+          <span>Cloud Code Execution Engine</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 0.6rem">
+          <span id="health-pill" class="health-pill">Checking backend</span>
+          <button id="refresh-health" class="btn secondary" type="button">Refresh</button>
+        </div>
+      </header>
+
+      <section class="hero">
+        <article class="hero-main panel reveal delay-1">
+          <span class="kicker mono">Mini PaaS • Secure Runner • Async Queue</span>
+          <h1>Run untrusted code safely, at scale, with auditable control.</h1>
+          <p>
+            This platform executes user-submitted code inside sandboxed containers, routes workloads through an async queue,
+            and enforces tenant-level controls for quotas, auth, and traceability.
+          </p>
+          <div class="stats">
+            <div class="stat">
+              <strong>ECS Fargate</strong>
+              <span>Ephemeral task-per-job isolation</span>
+            </div>
+            <div class="stat">
+              <strong>BullMQ + Redis</strong>
+              <span>Async dispatch and state lifecycle</span>
+            </div>
+            <div class="stat">
+              <strong>Tenant Controls</strong>
+              <span>API keys, quotas, and audit stream</span>
+            </div>
+          </div>
+        </article>
+        <aside class="hero-aside panel reveal delay-2">
+          <div class="signal">
+            <h3>Security Signals</h3>
+            <p>Read-only filesystems, dropped capabilities, no-new-privileges, bounded process execution.</p>
+          </div>
+          <div class="signal">
+            <h3>Infrastructure Signals</h3>
+            <p>ALB + ECS services + ElastiCache + strict security-group routing for runner, worker, and API layers.</p>
+          </div>
+          <div class="signal">
+            <h3>Recruiter Lens</h3>
+            <p>Demonstrates systems design depth across backend architecture, container hardening, and cloud operations.</p>
+          </div>
+        </aside>
+      </section>
+
+      <section class="section section-grid">
+        <article class="panel demo-panel reveal delay-2">
+          <h2 class="section-title">Architecture Components</h2>
+          <div class="cards">
+            <div class="card">
+              <h4>1. Control Plane API</h4>
+              <p>Validates jobs, enforces tenant auth and quotas, emits audit events, and exposes status endpoints.</p>
+            </div>
+            <div class="card">
+              <h4>2. Queue Worker</h4>
+              <p>Consumes queued jobs and dispatches hardened runner tasks locally or to ECS/Fargate.</p>
+            </div>
+            <div class="card">
+              <h4>3. Sandbox Runner</h4>
+              <p>Executes JavaScript/Python/Java with strict timeout/process/file limits and bounded output capture.</p>
+            </div>
+            <div class="card">
+              <h4>4. Shared Data Plane</h4>
+              <p>Redis stores queue state, quota counters, and append-only audit events for traceability.</p>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel demo-panel reveal delay-3">
+          <h2 class="section-title">Execution Lifecycle</h2>
+          <div class="timeline">
+            <div class="step">
+              <div class="step-badge">1</div>
+              <div>
+                <strong>Submit</strong>
+                <p>Client posts code payload. API authenticates tenant and reserves quota atomically.</p>
+              </div>
+            </div>
+            <div class="step">
+              <div class="step-badge">2</div>
+              <div>
+                <strong>Queue</strong>
+                <p>Job enters BullMQ queue and transitions to running/dispatched states.</p>
+              </div>
+            </div>
+            <div class="step">
+              <div class="step-badge">3</div>
+              <div>
+                <strong>Execute</strong>
+                <p>Worker launches isolated runner task, with per-job resource constraints attached.</p>
+              </div>
+            </div>
+            <div class="step">
+              <div class="step-badge">4</div>
+              <div>
+                <strong>Observe</strong>
+                <p>Result, duration, and audit events are persisted; tenant can poll status safely.</p>
+              </div>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="demo">
+        <article class="panel demo-panel reveal delay-2">
+          <h2 class="section-title">Live Sandbox Demo</h2>
+          <p class="muted">Submit a job to the real backend from this page. Use your tenant API key.</p>
+
+          <form id="job-form">
+            <div class="field">
+              <label for="api-key">Tenant API Key</label>
+              <input id="api-key" name="apiKey" value="dev-local-key" autocomplete="off" required />
+            </div>
+
+            <div class="row">
+              <div class="field">
+                <label for="language">Language</label>
+                <select id="language" name="language">
+                  <option value="javascript">javascript</option>
+                  <option value="python">python</option>
+                  <option value="java">java</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="timeoutMs">Timeout (ms)</label>
+                <input id="timeoutMs" name="timeoutMs" type="number" min="100" max="15000" value="2000" />
+              </div>
+              <div class="field">
+                <label for="memoryMb">Memory (MB)</label>
+                <input id="memoryMb" name="memoryMb" type="number" min="64" max="512" value="128" />
+              </div>
+            </div>
+
+            <div class="field">
+              <label for="sourceCode">Source Code</label>
+              <textarea id="sourceCode" name="sourceCode">console.log("Hello from recruiter demo")</textarea>
+            </div>
+
+            <div class="field">
+              <label for="stdin">stdin (optional)</label>
+              <input id="stdin" name="stdin" placeholder="Input passed to the runtime" />
+            </div>
+
+            <div class="actions">
+              <button class="btn" type="submit">Run Job</button>
+              <button id="load-quotas" class="btn secondary" type="button">Load Quotas</button>
+              <button id="load-history" class="btn secondary" type="button">History</button>
+              <button id="load-audit" class="btn secondary" type="button">Audit</button>
+            </div>
+          </form>
+        </article>
+
+        <article class="panel demo-panel reveal delay-3">
+          <h2 class="section-title">Runtime Output</h2>
+          <div class="status-box">
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.6rem">
+              <span id="job-status" class="badge">idle</span>
+              <span id="job-id" class="mono muted">No job submitted</span>
+            </div>
+          </div>
+
+          <div class="status-box">
+            <strong>Result</strong>
+            <pre id="result-json">No results yet.</pre>
+          </div>
+
+          <div class="status-box">
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.6rem">
+              <strong>AI Analysis</strong>
+              <button id="analyze-job" class="btn secondary" type="button">Analyze Latest</button>
+            </div>
+            <pre id="analysis-json">Run a job, then click "Analyze Latest".</pre>
+          </div>
+
+          <div class="status-box">
+            <strong>Run History</strong>
+            <pre id="history-json">Press "History".</pre>
+          </div>
+
+          <div class="status-box">
+            <strong>Tenant Audit Events</strong>
+            <pre id="audit-json">Press "Audit".</pre>
+          </div>
+
+          <div class="status-box">
+            <strong>Tenant Quotas</strong>
+            <pre id="quota-json">Press "Load Quotas".</pre>
+          </div>
+
+          <p class="muted">Tip: if auth fails, verify your `x-api-key` value for the deployed tenant.</p>
+        </article>
+      </section>
+    </main>
+
+    <script>
+      const healthPill = document.getElementById("health-pill");
+      const refreshHealthBtn = document.getElementById("refresh-health");
+      const form = document.getElementById("job-form");
+      const languageSelect = document.getElementById("language");
+      const sourceCodeInput = document.getElementById("sourceCode");
+      const jobStatus = document.getElementById("job-status");
+      const jobIdText = document.getElementById("job-id");
+      const resultJson = document.getElementById("result-json");
+      const analysisJson = document.getElementById("analysis-json");
+      const historyJson = document.getElementById("history-json");
+      const auditJson = document.getElementById("audit-json");
+      const quotaJson = document.getElementById("quota-json");
+      const loadQuotasBtn = document.getElementById("load-quotas");
+      const loadHistoryBtn = document.getElementById("load-history");
+      const loadAuditBtn = document.getElementById("load-audit");
+      const analyzeBtn = document.getElementById("analyze-job");
+
+      let pollHandle = null;
+      let latestJobId = null;
+
+      const apiKeyInput = document.getElementById("api-key");
+      const storedKey = localStorage.getItem("ccee_api_key");
+      if (storedKey) {
+        apiKeyInput.value = storedKey;
+      }
+
+      const templates = {
+        javascript: 'console.log("Hello from recruiter demo")',
+        python: 'print("Hello from recruiter demo")',
+        java: 'public class Main {\\n  public static void main(String[] args) {\\n    System.out.println("Hello from recruiter demo");\\n  }\\n}'
+      };
+
+      const setStatus = (status) => {
+        jobStatus.textContent = status;
+        jobStatus.className = "badge";
+        if (["queued", "retrying", "running", "dispatched", "succeeded", "failed"].includes(status)) {
+          jobStatus.classList.add(status);
+        }
+      };
+
+      const format = (data) => JSON.stringify(data, null, 2);
+
+      const fetchJson = async (url, options = {}) => {
+        const res = await fetch(url, options);
+        let payload = null;
+
+        try {
+          payload = await res.json();
+        } catch (error) {
+          payload = { error: "invalid_json_response", status: res.status };
+        }
+
+        return { res, payload };
+      };
+
+      const getApiKey = () => apiKeyInput.value.trim();
+
+      const refreshHealth = async () => {
+        healthPill.className = "health-pill";
+        healthPill.textContent = "Checking backend";
+
+        try {
+          const { res } = await fetchJson("/health");
+          if (!res.ok) {
+            throw new Error(`health_failed_${res.status}`);
+          }
+
+          healthPill.className = "health-pill ok";
+          healthPill.textContent = "Backend Healthy";
+        } catch (error) {
+          healthPill.className = "health-pill error";
+          healthPill.textContent = "Backend Unreachable";
+        }
+      };
+
+      const loadQuotas = async () => {
+        const apiKey = getApiKey();
+        if (!apiKey) {
+          quotaJson.textContent = "Set API key first.";
+          return;
+        }
+
+        const { payload } = await fetchJson("/v1/quotas", {
+          headers: {
+            "x-api-key": apiKey
+          }
+        });
+
+        quotaJson.textContent = format(payload);
+      };
+
+      const loadHistory = async () => {
+        const apiKey = getApiKey();
+        if (!apiKey) {
+          historyJson.textContent = "Set API key first.";
+          return;
+        }
+
+        const { payload } = await fetchJson("/v1/jobs?limit=10", {
+          headers: {
+            "x-api-key": apiKey
+          }
+        });
+
+        historyJson.textContent = format(payload);
+      };
+
+      const loadAudit = async () => {
+        const apiKey = getApiKey();
+        if (!apiKey) {
+          auditJson.textContent = "Set API key first.";
+          return;
+        }
+
+        const { payload } = await fetchJson("/v1/audit?limit=12", {
+          headers: {
+            "x-api-key": apiKey
+          }
+        });
+
+        auditJson.textContent = format(payload);
+      };
+
+      const analyzeLatest = async () => {
+        const apiKey = getApiKey();
+        if (!apiKey) {
+          analysisJson.textContent = "Set API key first.";
+          return;
+        }
+
+        if (!latestJobId) {
+          analysisJson.textContent = "Run a job first.";
+          return;
+        }
+
+        analysisJson.textContent = "Generating analysis...";
+        const { payload } = await fetchJson(`/v1/jobs/${latestJobId}/analyze`, {
+          method: "POST",
+          headers: {
+            "x-api-key": apiKey
+          }
+        });
+
+        analysisJson.textContent = format(payload);
+      };
+
+      const pollJob = async (id, apiKey) => {
+        if (pollHandle) {
+          clearInterval(pollHandle);
+        }
+
+        const fetchStatus = async () => {
+          const { res, payload } = await fetchJson(`/v1/jobs/${id}`, {
+            headers: {
+              "x-api-key": apiKey
+            }
+          });
+
+          if (!res.ok) {
+            setStatus("failed");
+            resultJson.textContent = format(payload);
+            clearInterval(pollHandle);
+            return;
+          }
+
+          setStatus(payload.status);
+          resultJson.textContent = format(payload);
+
+          if (payload.status === "succeeded" || payload.status === "failed") {
+            clearInterval(pollHandle);
+            await Promise.all([loadQuotas(), loadHistory(), loadAudit()]);
+          }
+        };
+
+        await fetchStatus();
+        pollHandle = setInterval(fetchStatus, 2000);
+      };
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+
+        const apiKey = getApiKey();
+        if (!apiKey) {
+          resultJson.textContent = "Set API key first.";
+          return;
+        }
+
+        localStorage.setItem("ccee_api_key", apiKey);
+
+        const data = new FormData(form);
+        const body = {
+          language: data.get("language"),
+          sourceCode: data.get("sourceCode"),
+          stdin: data.get("stdin") || "",
+          timeoutMs: Number(data.get("timeoutMs")),
+          memoryMb: Number(data.get("memoryMb")),
+          cpuMillicores: 256
+        };
+
+        setStatus("queued");
+        resultJson.textContent = "Submitting job...";
+        analysisJson.textContent = "Run complete first, then click Analyze Latest.";
+
+        try {
+          const { res, payload } = await fetchJson("/v1/jobs", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-api-key": apiKey
+            },
+            body: JSON.stringify(body)
+          });
+
+          if (!res.ok) {
+            setStatus("failed");
+            resultJson.textContent = format(payload);
+            return;
+          }
+
+          latestJobId = payload.jobId;
+          jobIdText.textContent = payload.jobId;
+          await pollJob(payload.jobId, apiKey);
+        } catch (error) {
+          setStatus("failed");
+          resultJson.textContent = format({
+            error: "network_error",
+            detail: error instanceof Error ? error.message : "Unknown network error"
+          });
+        }
+      });
+
+      sourceCodeInput.addEventListener("input", () => {
+        sourceCodeInput.dataset.edited = "true";
+      });
+
+      languageSelect.addEventListener("change", () => {
+        if (sourceCodeInput.dataset.edited === "true") {
+          return;
+        }
+
+        sourceCodeInput.value = templates[languageSelect.value] || templates.javascript;
+      });
+
+      refreshHealthBtn.addEventListener("click", refreshHealth);
+      loadQuotasBtn.addEventListener("click", loadQuotas);
+      loadHistoryBtn.addEventListener("click", loadHistory);
+      loadAuditBtn.addEventListener("click", loadAudit);
+      analyzeBtn.addEventListener("click", analyzeLatest);
+
+      refreshHealth();
+      loadQuotas();
+      loadHistory();
+      loadAudit();
+    </script>
+  </body>
+</html>
