@@ -215,6 +215,21 @@ const toFloat = (value: string | null | undefined, fallback: number): number => 
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const getJobIdParam = (request: FastifyRequest): string | null => {
+  const params = request.params as Record<string, unknown>;
+  const jobId = params.jobId;
+  if (typeof jobId === "string" && jobId.trim().length > 0) {
+    return jobId.trim();
+  }
+
+  const id = params.id;
+  if (typeof id === "string" && id.trim().length > 0) {
+    return id.trim();
+  }
+
+  return null;
+};
+
 const normalizeLanguage = (value: string | undefined): (typeof SUPPORTED_LANGUAGES)[number] => {
   if (value && SUPPORTED_LANGUAGES.includes(value as (typeof SUPPORTED_LANGUAGES)[number])) {
     return value as (typeof SUPPORTED_LANGUAGES)[number];
@@ -242,12 +257,13 @@ const serializeJob = (data: Record<string, string>) => {
   const result = parseExecutionResult(data.result);
   const error = data.error || null;
   const inferredFailureCategory = data.failureCategory || classifyFailureCategory({ result, errorMessage: error });
+  const normalizedStatus = data.status === "failed" && result?.timedOut ? "timed_out" : data.status;
 
   return {
     jobId: data.jobId,
     tenantId: data.tenantId,
     traceId: data.traceId || null,
-    status: data.status,
+    status: normalizedStatus,
     language: data.language,
     createdAt: data.createdAt,
     startedAt: data.startedAt || null,
@@ -647,7 +663,7 @@ app.get("/v1/costs", async (request, reply) => {
   });
 });
 
-app.post("/v1/jobs", async (request, reply) => {
+const submitExecutionHandler = async (request: FastifyRequest, reply: FastifyReply) => {
   const tenant = await authenticateTenant(request, reply);
   if (!tenant) {
     return;
@@ -844,13 +860,18 @@ app.post("/v1/jobs", async (request, reply) => {
 
   return reply.code(202).send({
     jobId,
+    executionId: jobId,
     traceId: request.traceId,
     status: "queued",
-    statusUrl: `/v1/jobs/${jobId}`
+    statusUrl: `/v1/jobs/${jobId}`,
+    executionUrl: `/executions/${jobId}`
   });
-});
+};
 
-app.get("/v1/jobs", async (request, reply) => {
+app.post("/v1/jobs", submitExecutionHandler);
+app.post("/executions", submitExecutionHandler);
+
+const listExecutionsHandler = async (request: FastifyRequest, reply: FastifyReply) => {
   const tenant = await authenticateTenant(request, reply);
   if (!tenant) {
     return;
@@ -885,31 +906,82 @@ app.get("/v1/jobs", async (request, reply) => {
     .map(serializeJob);
 
   return reply.send({ tenantId: tenant.tenantId, traceId: request.traceId, items });
-});
+};
 
-app.get<{ Params: { jobId: string } }>("/v1/jobs/:jobId", async (request, reply) => {
+app.get("/v1/jobs", listExecutionsHandler);
+app.get("/executions", listExecutionsHandler);
+
+const getExecutionHandler = async (request: FastifyRequest, reply: FastifyReply) => {
   const tenant = await authenticateTenant(request, reply);
   if (!tenant) {
     return;
   }
 
-  const key = redisJobKey(request.params.jobId);
+  const jobId = getJobIdParam(request);
+  if (!jobId) {
+    return reply.code(400).send({ error: "validation_error", traceId: request.traceId, reason: "missing_job_id" });
+  }
+
+  const key = redisJobKey(jobId);
   const data = await redis.hgetall(key);
 
   if (!data.status || data.tenantId !== tenant.tenantId) {
     return reply.code(404).send({ error: "not_found", traceId: request.traceId });
   }
 
-  return reply.send(serializeJob(data));
-});
+  const execution = serializeJob(data);
+  return reply.send({ ...execution, executionId: execution.jobId });
+};
 
-app.post<{ Params: { jobId: string } }>("/v1/jobs/:jobId/analyze", async (request, reply) => {
+app.get("/v1/jobs/:jobId", getExecutionHandler);
+app.get("/executions/:id", getExecutionHandler);
+
+app.get<{ Params: { id: string } }>("/executions/:id/logs", async (request, reply) => {
   const tenant = await authenticateTenant(request, reply);
   if (!tenant) {
     return;
   }
 
-  const key = redisJobKey(request.params.jobId);
+  const jobId = getJobIdParam(request);
+  if (!jobId) {
+    return reply.code(400).send({ error: "validation_error", traceId: request.traceId, reason: "missing_job_id" });
+  }
+
+  const data = await redis.hgetall(redisJobKey(jobId));
+  if (!data.status || data.tenantId !== tenant.tenantId) {
+    return reply.code(404).send({ error: "not_found", traceId: request.traceId });
+  }
+
+  const execution = serializeJob(data);
+  const stdout = execution.result?.stdout ?? "";
+  const stderr = execution.result?.stderr ?? "";
+
+  return reply.send({
+    executionId: execution.jobId,
+    traceId: request.traceId,
+    status: execution.status,
+    logs: {
+      stdout,
+      stderr
+    },
+    timedOut: execution.result?.timedOut ?? false,
+    durationMs: execution.result?.durationMs ?? null,
+    updatedAt: execution.updatedAt
+  });
+});
+
+const analyzeExecutionHandler = async (request: FastifyRequest, reply: FastifyReply) => {
+  const tenant = await authenticateTenant(request, reply);
+  if (!tenant) {
+    return;
+  }
+
+  const jobId = getJobIdParam(request);
+  if (!jobId) {
+    return reply.code(400).send({ error: "validation_error", traceId: request.traceId, reason: "missing_job_id" });
+  }
+
+  const key = redisJobKey(jobId);
   const data = await redis.hgetall(key);
 
   if (!data.status || data.tenantId !== tenant.tenantId) {
@@ -943,7 +1015,7 @@ app.post<{ Params: { jobId: string } }>("/v1/jobs/:jobId/analyze", async (reques
   if (fallbackReason && provider === "heuristic" && config.AI_PROVIDER === "openai") {
     request.log.warn(
       {
-        jobId: request.params.jobId,
+        jobId,
         tenantId: tenant.tenantId,
         traceId: request.traceId,
         fallbackReason
@@ -964,7 +1036,7 @@ app.post<{ Params: { jobId: string } }>("/v1/jobs/:jobId/analyze", async (reques
     actor: "api",
     action: "job_analyzed",
     tenantId: tenant.tenantId,
-    jobId: request.params.jobId,
+    jobId,
     metadata: {
       provider,
       confidence: analysis.confidence,
@@ -975,13 +1047,17 @@ app.post<{ Params: { jobId: string } }>("/v1/jobs/:jobId/analyze", async (reques
   });
 
   return reply.send({
-    jobId: request.params.jobId,
+    jobId,
+    executionId: jobId,
     traceId: request.traceId,
     status: data.status,
     provider,
     analysis
   });
-});
+};
+
+app.post("/v1/jobs/:jobId/analyze", analyzeExecutionHandler);
+app.post("/executions/:id/analyze", analyzeExecutionHandler);
 
 app.get("/v1/audit", async (request, reply) => {
   const tenant = await authenticateTenant(request, reply);

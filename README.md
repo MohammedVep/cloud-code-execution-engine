@@ -2,6 +2,16 @@
 
 Secure, multi-tenant, asynchronous code execution platform with recruiter-facing UI and API.
 
+> Distributed code execution platform with queue-based job scheduling, isolated sandboxes, resource limits, and execution observability.
+
+## Portfolio docs
+
+- Architecture: [`docs/architecture.md`](docs/architecture.md)
+- Security model: [`docs/security.md`](docs/security.md)
+- Scaling model: [`docs/scaling.md`](docs/scaling.md)
+- System design: [`docs/system-design.md`](docs/system-design.md)
+- Demo script: [`demo/DEMO_SCRIPT.md`](demo/DEMO_SCRIPT.md)
+
 ## What is implemented
 
 - `services/api`
@@ -221,8 +231,13 @@ Stop:
 - `POST /v1/jobs`
 - `GET /v1/jobs/:jobId`
 - `GET /v1/jobs?limit=20`
+- `POST /executions` (alias)
+- `GET /executions/:id` (alias)
+- `GET /executions/:id/logs`
+- `GET /executions?limit=20` (alias)
 - `GET /v1/audit?limit=20`
 - `POST /v1/jobs/:jobId/analyze`
+- `POST /executions/:id/analyze` (alias)
 
 All `/v1/*` endpoints are protected by configured auth mode:
 - `AUTH_MODE=api_key`: require `x-api-key`.

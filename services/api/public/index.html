@@ -366,6 +366,18 @@
         line-height: 1.5;
       }
 
+      #source-editor {
+        width: 100%;
+        min-height: 300px;
+        border: 1px solid var(--line);
+        border-radius: 0.7rem;
+        overflow: hidden;
+      }
+
+      #sourceCode {
+        display: none;
+      }
+
       .row {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -411,6 +423,11 @@
       .badge.failed {
         background: rgba(194, 52, 52, 0.14);
         color: var(--error);
+      }
+
+      .badge.timed_out {
+        background: rgba(179, 95, 0, 0.16);
+        color: var(--warn);
       }
 
       .badge.running,
@@ -623,7 +640,8 @@
             </div>
 
             <div class="field">
-              <label for="sourceCode">Source Code</label>
+              <label for="source-editor">Source Code (Monaco Editor)</label>
+              <div id="source-editor" aria-label="Source code editor"></div>
               <textarea id="sourceCode" name="sourceCode">console.log("Hello from recruiter demo")</textarea>
             </div>
 
@@ -683,12 +701,14 @@
       </section>
     </main>
 
+    <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js"></script>
     <script>
       const healthPill = document.getElementById("health-pill");
       const refreshHealthBtn = document.getElementById("refresh-health");
       const form = document.getElementById("job-form");
       const languageSelect = document.getElementById("language");
       const sourceCodeInput = document.getElementById("sourceCode");
+      const sourceEditorMount = document.getElementById("source-editor");
       const jobStatus = document.getElementById("job-status");
       const jobIdText = document.getElementById("job-id");
       const resultJson = document.getElementById("result-json");
@@ -703,6 +723,7 @@
 
       let pollHandle = null;
       let latestJobId = null;
+      let monacoEditor = null;
 
       const apiKeyInput = document.getElementById("api-key");
       const storedKey = localStorage.getItem("ccee_api_key");
@@ -716,10 +737,69 @@
         java: 'public class Main {\\n  public static void main(String[] args) {\\n    System.out.println("Hello from recruiter demo");\\n  }\\n}'
       };
 
+      const languageToMonaco = {
+        javascript: "javascript",
+        python: "python",
+        java: "java"
+      };
+
+      const getSourceCodeValue = () => (monacoEditor ? monacoEditor.getValue() : sourceCodeInput.value);
+
+      const setSourceCodeValue = (value) => {
+        sourceCodeInput.value = value;
+        if (monacoEditor) {
+          monacoEditor.setValue(value);
+        }
+      };
+
+      const setMonacoLanguage = (language) => {
+        if (!monacoEditor || !window.monaco) {
+          return;
+        }
+
+        const model = monacoEditor.getModel();
+        if (!model) {
+          return;
+        }
+
+        window.monaco.editor.setModelLanguage(model, languageToMonaco[language] || "javascript");
+      };
+
+      const initMonacoEditor = () => {
+        if (!window.require || !sourceEditorMount) {
+          return;
+        }
+
+        window.require.config({
+          paths: {
+            vs: "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs"
+          }
+        });
+
+        window.require(["vs/editor/editor.main"], () => {
+          monacoEditor = window.monaco.editor.create(sourceEditorMount, {
+            value: sourceCodeInput.value,
+            language: "javascript",
+            automaticLayout: true,
+            minimap: { enabled: false },
+            scrollBeyondLastLine: false,
+            fontSize: 13,
+            lineNumbersMinChars: 3,
+            fontFamily: "'IBM Plex Mono', monospace",
+            theme: "vs"
+          });
+
+          monacoEditor.onDidChangeModelContent(() => {
+            sourceCodeInput.value = monacoEditor.getValue();
+            sourceCodeInput.dataset.edited = "true";
+          });
+        });
+      };
+
       const setStatus = (status) => {
         jobStatus.textContent = status;
         jobStatus.className = "badge";
-        if (["queued", "retrying", "running", "dispatched", "succeeded", "failed"].includes(status)) {
+        if (["queued", "retrying", "running", "dispatched", "succeeded", "failed", "timed_out"].includes(status)) {
           jobStatus.classList.add(status);
         }
       };
@@ -852,7 +932,7 @@
           setStatus(payload.status);
           resultJson.textContent = format(payload);
 
-          if (payload.status === "succeeded" || payload.status === "failed") {
+          if (payload.status === "succeeded" || payload.status === "failed" || payload.status === "timed_out") {
             clearInterval(pollHandle);
             await Promise.all([loadQuotas(), loadHistory(), loadAudit()]);
           }
@@ -874,9 +954,10 @@
         localStorage.setItem("ccee_api_key", apiKey);
 
         const data = new FormData(form);
+        sourceCodeInput.value = getSourceCodeValue();
         const body = {
           language: data.get("language"),
-          sourceCode: data.get("sourceCode"),
+          sourceCode: sourceCodeInput.value,
           stdin: data.get("stdin") || "",
           timeoutMs: Number(data.get("timeoutMs")),
           memoryMb: Number(data.get("memoryMb")),
@@ -920,11 +1001,13 @@
       });
 
       languageSelect.addEventListener("change", () => {
+        setMonacoLanguage(languageSelect.value);
+
         if (sourceCodeInput.dataset.edited === "true") {
           return;
         }
 
-        sourceCodeInput.value = templates[languageSelect.value] || templates.javascript;
+        setSourceCodeValue(templates[languageSelect.value] || templates.javascript);
       });
 
       refreshHealthBtn.addEventListener("click", refreshHealth);
@@ -933,6 +1016,7 @@
       loadAuditBtn.addEventListener("click", loadAudit);
       analyzeBtn.addEventListener("click", analyzeLatest);
 
+      initMonacoEditor();
       refreshHealth();
       loadQuotas();
       loadHistory();
