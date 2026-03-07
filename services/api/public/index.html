@@ -525,7 +525,7 @@
           </div>
           <div class="signal">
             <h3>Infrastructure Signals</h3>
-            <p>ALB + ECS services + ElastiCache + strict security-group routing for runner, worker, and API layers.</p>
+            <p>ALB + ECS services + ElastiCache + queue-depth CloudWatch alarms that autoscale worker capacity.</p>
           </div>
           <div class="signal">
             <h3>Recruiter Lens</h3>
@@ -540,7 +540,7 @@
           <div class="cards">
             <div class="card">
               <h4>1. Control Plane API</h4>
-              <p>Validates jobs, enforces tenant auth and quotas, emits audit events, and exposes status endpoints.</p>
+              <p>Validates jobs, enforces tenant auth/quotas/submit-burst limits, and rejects oversized payload abuse.</p>
             </div>
             <div class="card">
               <h4>2. Queue Worker</h4>

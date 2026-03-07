@@ -23,6 +23,7 @@ COPY --from=builder /app/services/runner/dist ./services/runner/dist
 COPY --from=builder /app/services/runner/package.json ./services/runner/package.json
 
 RUN npm install --omit=dev --workspace @ccee/common --workspace @ccee/runner
+RUN chmod -R a+rX /app
 
 USER node
 ENV RUN_ROOT=/workspace

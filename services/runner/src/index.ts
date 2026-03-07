@@ -4,10 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  classifyFailureCategory,
+  estimateExecutionCostUsd,
   executionResultSchema,
   nowIso,
   queueJobPayloadSchema,
   redisJobKey,
+  tenantDailyCostKey,
   tenantActiveJobsKey,
   type ExecutionResult
 } from "@ccee/common";
@@ -243,21 +246,45 @@ const persistResultToRedis = async (
   redisUrl: string,
   jobId: string,
   tenantId: string,
+  request: {
+    cpuMillicores: number;
+    memoryMb: number;
+  },
   result: ExecutionResult,
-  auditStreamKey: string
+  auditStreamKey: string,
+  traceId?: string
 ): Promise<void> => {
   const redis = new Redis(redisUrl, { maxRetriesPerRequest: 2 });
   const now = nowIso();
+  const estimatedCostUsd = estimateExecutionCostUsd({
+    durationMs: result.durationMs,
+    cpuMillicores: request.cpuMillicores,
+    memoryMb: request.memoryMb
+  });
+  const failureCategory = classifyFailureCategory({ result });
 
-  await redis.hset(redisJobKey(jobId), {
+  const updates: Record<string, string> = {
     status: result.status,
     result: JSON.stringify(result),
+    estimatedCostUsd: estimatedCostUsd.toFixed(8),
+    billableDurationMs: String(result.durationMs),
+    failureCategory,
+    costModelVersion: "fargate-v1",
     currentAttempt: "",
     retryScheduledAt: "",
     completedAt: now,
     updatedAt: now,
     error: ""
-  });
+  };
+  if (traceId) {
+    updates.traceId = traceId;
+  }
+  await redis.hset(redisJobKey(jobId), updates);
+
+  const dateKey = now.slice(0, 10);
+  const costKey = tenantDailyCostKey(tenantId, dateKey);
+  await redis.incrbyfloat(costKey, estimatedCostUsd);
+  await redis.expire(costKey, 86_400);
 
   const releaseScript = `
   local activeKey = KEYS[1]
@@ -286,7 +313,10 @@ const persistResultToRedis = async (
     JSON.stringify({
       timedOut: result.timedOut,
       exitCode: result.exitCode,
-      durationMs: result.durationMs
+      durationMs: result.durationMs,
+      estimatedCostUsd,
+      failureCategory,
+      traceId: traceId ?? null
     })
   );
 
@@ -307,7 +337,19 @@ const run = async (): Promise<void> => {
       throw new Error("REDIS_URL is required when RESULT_BACKEND=redis");
     }
 
-    await persistResultToRedis(env.REDIS_URL, jobId, tenantId, result, env.AUDIT_STREAM_KEY);
+    const payload = queueJobPayloadSchema.parse(JSON.parse(Buffer.from(env.JOB_DATA_B64, "base64").toString("utf8")));
+    await persistResultToRedis(
+      env.REDIS_URL,
+      jobId,
+      tenantId,
+      {
+        cpuMillicores: payload.request.cpuMillicores,
+        memoryMb: payload.request.memoryMb
+      },
+      result,
+      env.AUDIT_STREAM_KEY,
+      payload.traceId
+    );
     return;
   }
 
@@ -337,8 +379,13 @@ run().catch(async (error) => {
         env.data.REDIS_URL,
         payload.jobId,
         payload.tenant.tenantId,
+        {
+          cpuMillicores: payload.request.cpuMillicores,
+          memoryMb: payload.request.memoryMb
+        },
         fallback,
-        env.data.AUDIT_STREAM_KEY
+        env.data.AUDIT_STREAM_KEY,
+        payload.traceId
       );
 
       process.exit(1);

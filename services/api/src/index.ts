@@ -1,35 +1,97 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
   SUPPORTED_LANGUAGES,
+  classifyFailureCategory,
   executionResultSchema,
   nowIso,
   jobRequestSchema,
   queueJobPayloadSchema,
   redisJobKey,
   tenantActiveJobsKey,
+  tenantDailyCostKey,
   tenantDailyJobsKey,
-  tenantJobHistoryKey
+  tenantJobHistoryKey,
+  tenantRateLimitKey,
+  tenantSubmitRateLimitKey
 } from "@ccee/common";
 import fastifyStatic from "@fastify/static";
 import { Queue } from "bullmq";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { Redis } from "ioredis";
+import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 import { z } from "zod";
 
 import { generateExecutionAnalysis } from "./analysis.js";
 import { appendAuditEvent } from "./audit.js";
 import { config } from "./config.js";
 import { reserveQuota, rollbackReservedQuota } from "./quota.js";
-import { loadTenantApiKeys, type TenantPrincipal } from "./tenants.js";
+import { evaluatePayloadSizeLimits } from "./request-guards.js";
+import {
+  loadTenantApiKeys,
+  loadTenantPolicies,
+  type TenantPolicy,
+  type TenantPrincipal
+} from "./tenants.js";
+
+declare module "fastify" {
+  interface FastifyRequest {
+    traceId: string;
+    startedAtMs: number;
+    authTenantId?: string;
+    authSubject?: string;
+  }
+}
+
+type AuthenticatedTenant = TenantPrincipal & {
+  authType: "api_key" | "jwt";
+  subject: string;
+};
+
+type PrincipalResolution =
+  | {
+      ok: true;
+      tenant: AuthenticatedTenant;
+    }
+  | {
+      ok: false;
+      reason: string;
+      statusCode: 401 | 403;
+    };
+
+type RateLimitDecision = {
+  allowed: boolean;
+  limit: number;
+  used: number;
+  remaining: number;
+  retryAfterSeconds: number;
+  resetEpochSeconds: number;
+  windowSeconds: number;
+};
 
 const app = Fastify({ logger: true });
 const tenantRegistry = loadTenantApiKeys(config.TENANT_API_KEYS_JSON);
+const configuredTenantPolicies = loadTenantPolicies(config.TENANT_POLICIES_JSON);
 
-if (tenantRegistry.size === 0) {
-  throw new Error("TENANT_API_KEYS_JSON configured no tenants");
+if (config.AUTH_MODE === "api_key" && tenantRegistry.size === 0) {
+  throw new Error("TENANT_API_KEYS_JSON configured no tenants while AUTH_MODE=api_key");
+}
+
+const tenantPolicyRegistry = new Map<string, TenantPolicy>();
+for (const tenant of tenantRegistry.values()) {
+  if (!tenantPolicyRegistry.has(tenant.tenantId)) {
+    tenantPolicyRegistry.set(tenant.tenantId, {
+      tenantId: tenant.tenantId,
+      maxConcurrentJobs: tenant.maxConcurrentJobs,
+      maxDailyJobs: tenant.maxDailyJobs
+    });
+  }
+}
+
+for (const [tenantId, policy] of configuredTenantPolicies.entries()) {
+  tenantPolicyRegistry.set(tenantId, policy);
 }
 
 const redisUrl = new URL(config.REDIS_URL);
@@ -46,6 +108,7 @@ const redisConnection = {
 const redis = new Redis(redisConnection);
 const queue = new Queue(config.JOB_QUEUE_NAME, { connection: redisConnection });
 const publicRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "public");
+const jwtJwks = config.JWT_JWKS_URL ? createRemoteJWKSet(new URL(config.JWT_JWKS_URL)) : null;
 
 void app.register(fastifyStatic, {
   root: publicRoot
@@ -57,6 +120,10 @@ const listJobsQuerySchema = z.object({
 
 const listAuditQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional()
+});
+
+const listCostsQuerySchema = z.object({
+  days: z.coerce.number().int().min(1).max(30).optional()
 });
 
 const parseJson = <T>(value: string | undefined): T | null => {
@@ -91,6 +158,23 @@ end
 return 1
 `;
 
+const rateLimitScript = `
+local key = KEYS[1]
+local ttlSeconds = tonumber(ARGV[1])
+
+local count = redis.call("INCR", key)
+if count == 1 then
+  redis.call("EXPIRE", key, ttlSeconds)
+end
+
+local ttl = redis.call("TTL", key)
+if ttl < 0 then
+  ttl = ttlSeconds
+end
+
+return {count, ttl}
+`;
+
 const appendHistoryItem = async (tenantId: string, jobId: string): Promise<void> => {
   const historyKey = tenantJobHistoryKey(tenantId);
 
@@ -122,6 +206,15 @@ const toInt = (value: string | undefined, fallback: number): number => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const toFloat = (value: string | null | undefined, fallback: number): number => {
+  if (!value) {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
 const normalizeLanguage = (value: string | undefined): (typeof SUPPORTED_LANGUAGES)[number] => {
   if (value && SUPPORTED_LANGUAGES.includes(value as (typeof SUPPORTED_LANGUAGES)[number])) {
     return value as (typeof SUPPORTED_LANGUAGES)[number];
@@ -130,73 +223,353 @@ const normalizeLanguage = (value: string | undefined): (typeof SUPPORTED_LANGUAG
   return "javascript";
 };
 
-const serializeJob = (data: Record<string, string>) => ({
-  jobId: data.jobId,
-  tenantId: data.tenantId,
-  status: data.status,
-  language: data.language,
-  createdAt: data.createdAt,
-  startedAt: data.startedAt || null,
-  completedAt: data.completedAt || null,
-  request: {
-    timeoutMs: toInt(data.timeoutMs, 3_000),
-    memoryMb: toInt(data.memoryMb, 128),
-    cpuMillicores: toInt(data.cpuMillicores, 256)
-  },
-  attempts: {
-    max: data.maxAttempts ? toInt(data.maxAttempts, 1) : null,
-    made: data.attemptsMade ? toInt(data.attemptsMade, 0) : 0,
-    current: data.currentAttempt ? toInt(data.currentAttempt, 1) : null
-  },
-  result: parseExecutionResult(data.result),
-  analysis: parseJson(data.analysis),
-  error: data.error || null,
-  updatedAt: data.updatedAt
-});
+const normalizeTraceId = (value: string): string =>
+  value
+    .trim()
+    .replace(/[^a-zA-Z0-9_.:/-]/g, "_")
+    .slice(0, 128);
 
-const getApiKey = (request: FastifyRequest): string | null => {
-  const raw = request.headers["x-api-key"];
-  if (!raw) {
+const coerceTraceId = (value: string): string => {
+  const normalized = normalizeTraceId(value);
+  if (normalized.length >= 8) {
+    return normalized;
+  }
+
+  return randomUUID();
+};
+
+const serializeJob = (data: Record<string, string>) => {
+  const result = parseExecutionResult(data.result);
+  const error = data.error || null;
+  const inferredFailureCategory = data.failureCategory || classifyFailureCategory({ result, errorMessage: error });
+
+  return {
+    jobId: data.jobId,
+    tenantId: data.tenantId,
+    traceId: data.traceId || null,
+    status: data.status,
+    language: data.language,
+    createdAt: data.createdAt,
+    startedAt: data.startedAt || null,
+    completedAt: data.completedAt || null,
+    request: {
+      timeoutMs: toInt(data.timeoutMs, 3_000),
+      memoryMb: toInt(data.memoryMb, 128),
+      cpuMillicores: toInt(data.cpuMillicores, 256)
+    },
+    attempts: {
+      max: data.maxAttempts ? toInt(data.maxAttempts, 1) : null,
+      made: data.attemptsMade ? toInt(data.attemptsMade, 0) : 0,
+      current: data.currentAttempt ? toInt(data.currentAttempt, 1) : null
+    },
+    result,
+    billing: {
+      estimatedCostUsd: Number(toFloat(data.estimatedCostUsd, 0).toFixed(8)),
+      billableDurationMs: toInt(data.billableDurationMs, result?.durationMs ?? 0),
+      costModelVersion: data.costModelVersion || null
+    },
+    failureCategory: inferredFailureCategory,
+    analysis: parseJson(data.analysis),
+    analysisProvider: data.analysisProvider || null,
+    analysisUpdatedAt: data.analysisUpdatedAt || null,
+    analysisFallbackReason: data.analysisFallbackReason || null,
+    error,
+    updatedAt: data.updatedAt
+  };
+};
+
+const fingerprintIdentity = (value: string): string =>
+  createHash("sha256").update(value).digest("hex").slice(0, 16);
+
+const getHeaderValue = (value: string | string[] | undefined): string | null => {
+  if (!value) {
     return null;
   }
 
-  if (Array.isArray(raw)) {
-    return raw[0] ?? null;
+  if (Array.isArray(value)) {
+    const first = value[0];
+    return typeof first === "string" && first.trim().length > 0 ? first.trim() : null;
   }
 
-  return raw;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+};
+
+const getApiKey = (request: FastifyRequest): string | null => getHeaderValue(request.headers["x-api-key"]);
+
+const getBearerToken = (request: FastifyRequest): string | null => {
+  const authorization = getHeaderValue(request.headers.authorization);
+  if (!authorization) {
+    return null;
+  }
+
+  const match = authorization.match(/^Bearer\s+(.+)$/i);
+  if (!match?.[1]) {
+    return null;
+  }
+
+  const token = match[1].trim();
+  return token.length > 0 ? token : null;
+};
+
+const getTraceId = (request: FastifyRequest): string => {
+  const requestedId = getHeaderValue(request.headers["x-request-id"]);
+  if (requestedId) {
+    return coerceTraceId(requestedId);
+  }
+
+  return coerceTraceId(String(request.id));
+};
+
+const utcDateKey = (daysAgo: number): string => {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() - daysAgo);
+  return date.toISOString().slice(0, 10);
+};
+
+const readStringClaim = (payload: JWTPayload, claimName: string): string | null => {
+  const value = (payload as Record<string, unknown>)[claimName];
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+};
+
+const resolveApiKeyPrincipal = (apiKey: string | null): PrincipalResolution => {
+  if (!apiKey) {
+    return { ok: false, reason: "missing_api_key", statusCode: 401 };
+  }
+
+  const tenant = tenantRegistry.get(apiKey);
+  if (!tenant) {
+    return { ok: false, reason: "invalid_api_key", statusCode: 401 };
+  }
+
+  return {
+    ok: true,
+    tenant: {
+      ...tenant,
+      authType: "api_key",
+      subject: tenant.apiKeyFingerprint
+    }
+  };
+};
+
+const resolveJwtPrincipal = async (token: string | null): Promise<PrincipalResolution> => {
+  if (!token) {
+    return { ok: false, reason: "missing_bearer_token", statusCode: 401 };
+  }
+
+  if (!jwtJwks) {
+    return { ok: false, reason: "jwt_not_configured", statusCode: 401 };
+  }
+
+  try {
+    const verificationOptions = config.JWT_AUDIENCE
+      ? {
+          issuer: config.JWT_ISSUER,
+          audience: config.JWT_AUDIENCE
+        }
+      : {
+          issuer: config.JWT_ISSUER
+        };
+
+    const { payload } = await jwtVerify(token, jwtJwks, verificationOptions);
+
+    const tenantId = readStringClaim(payload, config.JWT_TENANT_CLAIM);
+    if (!tenantId) {
+      return { ok: false, reason: "missing_jwt_tenant_claim", statusCode: 401 };
+    }
+
+    const subject = readStringClaim(payload, config.JWT_SUBJECT_CLAIM);
+    if (!subject) {
+      return { ok: false, reason: "missing_jwt_subject_claim", statusCode: 401 };
+    }
+
+    const tenantPolicy = tenantPolicyRegistry.get(tenantId);
+    if (!tenantPolicy) {
+      return { ok: false, reason: "unknown_tenant_policy", statusCode: 403 };
+    }
+
+    return {
+      ok: true,
+      tenant: {
+        tenantId,
+        maxConcurrentJobs: tenantPolicy.maxConcurrentJobs,
+        maxDailyJobs: tenantPolicy.maxDailyJobs,
+        apiKeyFingerprint: fingerprintIdentity(`jwt:${tenantId}:${subject}`),
+        authType: "jwt",
+        subject
+      }
+    };
+  } catch {
+    return { ok: false, reason: "invalid_jwt", statusCode: 401 };
+  }
+};
+
+const evaluateRateLimit = async (tenantId: string): Promise<RateLimitDecision> => {
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const windowSeconds = config.RATE_LIMIT_WINDOW_SECONDS;
+  const bucket = Math.floor(nowSeconds / windowSeconds);
+  const rateLimitKey = tenantRateLimitKey(tenantId, String(bucket));
+
+  const result = (await redis.eval(
+    rateLimitScript,
+    1,
+    rateLimitKey,
+    String(windowSeconds)
+  )) as [number, number];
+
+  const used = Number(result[0] ?? 0);
+  const ttl = Math.max(1, Number(result[1] ?? windowSeconds));
+  const limit = config.RATE_LIMIT_REQUESTS_PER_MINUTE;
+  const remaining = Math.max(0, limit - used);
+
+  return {
+    allowed: used <= limit,
+    limit,
+    used,
+    remaining,
+    retryAfterSeconds: ttl,
+    resetEpochSeconds: nowSeconds + ttl,
+    windowSeconds
+  };
+};
+
+const evaluateSubmitRateLimit = async (tenantId: string): Promise<RateLimitDecision> => {
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const windowSeconds = config.RATE_LIMIT_WINDOW_SECONDS;
+  const bucket = Math.floor(nowSeconds / windowSeconds);
+  const rateLimitKey = tenantSubmitRateLimitKey(tenantId, String(bucket));
+
+  const result = (await redis.eval(
+    rateLimitScript,
+    1,
+    rateLimitKey,
+    String(windowSeconds)
+  )) as [number, number];
+
+  const used = Number(result[0] ?? 0);
+  const ttl = Math.max(1, Number(result[1] ?? windowSeconds));
+  const limit = config.SUBMIT_RATE_LIMIT_PER_MINUTE;
+  const remaining = Math.max(0, limit - used);
+
+  return {
+    allowed: used <= limit,
+    limit,
+    used,
+    remaining,
+    retryAfterSeconds: ttl,
+    resetEpochSeconds: nowSeconds + ttl,
+    windowSeconds
+  };
+};
+
+const setRateLimitHeaders = (reply: FastifyReply, decision: RateLimitDecision): void => {
+  reply.header("x-ratelimit-limit", String(decision.limit));
+  reply.header("x-ratelimit-remaining", String(decision.remaining));
+  reply.header("x-ratelimit-reset", String(decision.resetEpochSeconds));
 };
 
 const authenticateTenant = async (
   request: FastifyRequest,
   reply: FastifyReply
-): Promise<TenantPrincipal | null> => {
+): Promise<AuthenticatedTenant | null> => {
   const apiKey = getApiKey(request);
-  if (!apiKey) {
+  const bearerToken = getBearerToken(request);
+
+  let resolution: PrincipalResolution;
+
+  if (config.AUTH_MODE === "api_key") {
+    resolution = resolveApiKeyPrincipal(apiKey);
+  } else if (config.AUTH_MODE === "jwt") {
+    resolution = await resolveJwtPrincipal(bearerToken);
+  } else if (bearerToken) {
+    resolution = await resolveJwtPrincipal(bearerToken);
+  } else {
+    resolution = resolveApiKeyPrincipal(apiKey);
+  }
+
+  if (!resolution.ok) {
     await appendAuditEvent(redis, config.AUDIT_STREAM_KEY, {
       actor: "api",
       action: "auth_failed",
-      metadata: { reason: "missing_api_key" }
+      metadata: {
+        reason: resolution.reason,
+        path: request.routeOptions.url ?? request.url,
+        method: request.method,
+        traceId: request.traceId
+      }
     });
 
-    await reply.code(401).send({ error: "unauthorized" });
+    await reply.code(resolution.statusCode).send({
+      error: resolution.statusCode === 403 ? "forbidden" : "unauthorized",
+      reason: resolution.reason,
+      traceId: request.traceId
+    });
     return null;
   }
 
-  const tenant = tenantRegistry.get(apiKey);
-  if (!tenant) {
+  const rateLimit = await evaluateRateLimit(resolution.tenant.tenantId);
+  setRateLimitHeaders(reply, rateLimit);
+
+  if (!rateLimit.allowed) {
     await appendAuditEvent(redis, config.AUDIT_STREAM_KEY, {
       actor: "api",
-      action: "auth_failed",
-      metadata: { reason: "invalid_api_key" }
+      action: "rate_limited",
+      tenantId: resolution.tenant.tenantId,
+      metadata: {
+        method: request.method,
+        path: request.routeOptions.url ?? request.url,
+        limit: rateLimit.limit,
+        used: rateLimit.used,
+        retryAfterSeconds: rateLimit.retryAfterSeconds,
+        traceId: request.traceId
+      }
     });
 
-    await reply.code(401).send({ error: "unauthorized" });
+    await reply
+      .code(429)
+      .header("retry-after", String(rateLimit.retryAfterSeconds))
+      .send({
+        error: "rate_limited",
+        traceId: request.traceId,
+        limit: rateLimit.limit,
+        used: rateLimit.used,
+        retryAfterSeconds: rateLimit.retryAfterSeconds,
+        windowSeconds: rateLimit.windowSeconds
+      });
     return null;
   }
 
-  return tenant;
+  request.authTenantId = resolution.tenant.tenantId;
+  request.authSubject = resolution.tenant.subject;
+  return resolution.tenant;
 };
+
+app.addHook("onRequest", async (request, reply) => {
+  request.traceId = getTraceId(request);
+  request.startedAtMs = Date.now();
+  reply.header("x-request-id", request.traceId);
+});
+
+app.addHook("onResponse", async (request, reply) => {
+  const durationMs = Math.max(0, Date.now() - (request.startedAtMs || Date.now()));
+  request.log.info(
+    {
+      traceId: request.traceId,
+      tenantId: request.authTenantId ?? null,
+      subject: request.authSubject ?? null,
+      method: request.method,
+      path: request.routeOptions.url ?? request.url,
+      statusCode: reply.statusCode,
+      durationMs
+    },
+    "request_completed"
+  );
+});
 
 app.get("/health", async () => ({ status: "ok", service: "api" }));
 
@@ -208,23 +581,69 @@ app.get("/v1/quotas", async (request, reply) => {
     return;
   }
 
-  const dateKey = new Date().toISOString().slice(0, 10);
-  const [active, daily] = await redis.mget(
+  const dateKey = utcDateKey(0);
+  const [active, daily, estimatedCost] = await redis.mget(
     tenantActiveJobsKey(tenant.tenantId),
-    tenantDailyJobsKey(tenant.tenantId, dateKey)
+    tenantDailyJobsKey(tenant.tenantId, dateKey),
+    tenantDailyCostKey(tenant.tenantId, dateKey)
   );
 
   return reply.send({
     tenantId: tenant.tenantId,
+    traceId: request.traceId,
+    authType: tenant.authType,
     limits: {
       maxConcurrentJobs: tenant.maxConcurrentJobs,
-      maxDailyJobs: tenant.maxDailyJobs
+      maxDailyJobs: tenant.maxDailyJobs,
+      rateLimitRequests: config.RATE_LIMIT_REQUESTS_PER_MINUTE,
+      rateLimitWindowSeconds: config.RATE_LIMIT_WINDOW_SECONDS,
+      submitRateLimitRequests: config.SUBMIT_RATE_LIMIT_PER_MINUTE
     },
     usage: {
       activeJobs: Number(active || 0),
       dailyJobs: Number(daily || 0),
-      dailyDate: dateKey
+      dailyDate: dateKey,
+      estimatedCostUsd: Number(toFloat(estimatedCost, 0).toFixed(8))
     }
+  });
+});
+
+app.get("/v1/costs", async (request, reply) => {
+  const tenant = await authenticateTenant(request, reply);
+  if (!tenant) {
+    return;
+  }
+
+  const parsedQuery = listCostsQuerySchema.safeParse(request.query ?? {});
+  if (!parsedQuery.success) {
+    return reply.code(400).send({
+      error: "validation_error",
+      traceId: request.traceId,
+      issues: parsedQuery.error.flatten()
+    });
+  }
+
+  const days = parsedQuery.data.days ?? 7;
+  const dateKeys = Array.from({ length: days }, (_, index) => utcDateKey(index));
+  const redisKeys = dateKeys.map((dateKey) => tenantDailyCostKey(tenant.tenantId, dateKey));
+  const values = redisKeys.length > 0 ? await redis.mget(...redisKeys) : [];
+
+  const daily = dateKeys.map((dateKey, index) => ({
+    date: dateKey,
+    estimatedCostUsd: Number(toFloat(values[index] ?? "0", 0).toFixed(8))
+  }));
+
+  const totalEstimatedCostUsd = Number(
+    daily.reduce((sum, item) => sum + item.estimatedCostUsd, 0).toFixed(8)
+  );
+
+  return reply.send({
+    tenantId: tenant.tenantId,
+    traceId: request.traceId,
+    currency: "USD",
+    windowDays: days,
+    totalEstimatedCostUsd,
+    daily
   });
 });
 
@@ -239,25 +658,86 @@ app.post("/v1/jobs", async (request, reply) => {
   if (!parsed.success) {
     return reply.code(400).send({
       error: "validation_error",
+      traceId: request.traceId,
       issues: parsed.error.flatten()
     });
+  }
+
+  const sizeViolation = evaluatePayloadSizeLimits({
+    sourceCode: parsed.data.sourceCode,
+    stdin: parsed.data.stdin,
+    maxSourceCodeBytes: config.MAX_SOURCE_CODE_BYTES,
+    maxStdinBytes: config.MAX_STDIN_BYTES
+  });
+  if (sizeViolation) {
+    await appendAuditEvent(redis, config.AUDIT_STREAM_KEY, {
+      actor: "api",
+      action: "submission_rejected_size",
+      tenantId: tenant.tenantId,
+      metadata: {
+        field: sizeViolation.field,
+        bytes: sizeViolation.bytes,
+        maxBytes: sizeViolation.maxBytes,
+        traceId: request.traceId
+      }
+    });
+
+    return reply.code(413).send({
+      error: "payload_too_large",
+      traceId: request.traceId,
+      reason: "request_size_exceeded",
+      field: sizeViolation.field,
+      bytes: sizeViolation.bytes,
+      maxBytes: sizeViolation.maxBytes
+    });
+  }
+
+  const submitRateLimit = await evaluateSubmitRateLimit(tenant.tenantId);
+  if (!submitRateLimit.allowed) {
+    await appendAuditEvent(redis, config.AUDIT_STREAM_KEY, {
+      actor: "api",
+      action: "submission_rejected_burst",
+      tenantId: tenant.tenantId,
+      metadata: {
+        method: request.method,
+        path: request.routeOptions.url ?? request.url,
+        limit: submitRateLimit.limit,
+        used: submitRateLimit.used,
+        retryAfterSeconds: submitRateLimit.retryAfterSeconds,
+        traceId: request.traceId
+      }
+    });
+
+    return reply
+      .code(429)
+      .header("retry-after", String(submitRateLimit.retryAfterSeconds))
+      .send({
+        error: "submit_rate_limited",
+        traceId: request.traceId,
+        limit: submitRateLimit.limit,
+        used: submitRateLimit.used,
+        retryAfterSeconds: submitRateLimit.retryAfterSeconds,
+        windowSeconds: submitRateLimit.windowSeconds
+      });
   }
 
   const reservation = await reserveQuota(redis, tenant, config.DAILY_QUOTA_TTL_SECONDS);
   if (!reservation.allowed) {
     await appendAuditEvent(redis, config.AUDIT_STREAM_KEY, {
       actor: "api",
-      action: "quota_rejected",
+      action: "submission_rejected_quota",
       tenantId: tenant.tenantId,
       metadata: {
         reason: reservation.reason,
         activeJobs: reservation.activeJobs,
-        dailyJobs: reservation.dailyJobs
+        dailyJobs: reservation.dailyJobs,
+        traceId: request.traceId
       }
     });
 
     return reply.code(429).send({
       error: "quota_exceeded",
+      traceId: request.traceId,
       reason: reservation.reason,
       limits: {
         maxConcurrentJobs: tenant.maxConcurrentJobs,
@@ -272,37 +752,41 @@ app.post("/v1/jobs", async (request, reply) => {
 
   const jobId = randomUUID();
   const createdAt = nowIso();
-  const payload = queueJobPayloadSchema.parse({
-    jobId,
-    tenant: {
-      tenantId: tenant.tenantId,
-      apiKeyFingerprint: tenant.apiKeyFingerprint
-    },
-    request: parsed.data,
-    createdAt
-  });
-
   const key = redisJobKey(jobId);
-  await redis.hset(key, {
-    jobId,
-    tenantId: payload.tenant.tenantId,
-    status: "queued",
-    language: payload.request.language,
-    sourceCode: payload.request.sourceCode,
-    stdin: payload.request.stdin,
-    timeoutMs: String(payload.request.timeoutMs),
-    memoryMb: String(payload.request.memoryMb),
-    cpuMillicores: String(payload.request.cpuMillicores),
-    maxAttempts: String(config.QUEUE_JOB_ATTEMPTS),
-    attemptsMade: "0",
-    currentAttempt: "1",
-    createdAt,
-    updatedAt: createdAt
-  });
-  await redis.expire(key, config.JOB_TTL_SECONDS);
-  await appendHistoryItem(payload.tenant.tenantId, jobId);
+  let payload: z.infer<typeof queueJobPayloadSchema> | null = null;
 
   try {
+    payload = queueJobPayloadSchema.parse({
+      jobId,
+      tenant: {
+        tenantId: tenant.tenantId,
+        apiKeyFingerprint: tenant.apiKeyFingerprint
+      },
+      traceId: request.traceId,
+      request: parsed.data,
+      createdAt
+    });
+
+    await redis.hset(key, {
+      jobId,
+      tenantId: payload.tenant.tenantId,
+      traceId: request.traceId,
+      status: "queued",
+      language: payload.request.language,
+      sourceCode: payload.request.sourceCode,
+      stdin: payload.request.stdin,
+      timeoutMs: String(payload.request.timeoutMs),
+      memoryMb: String(payload.request.memoryMb),
+      cpuMillicores: String(payload.request.cpuMillicores),
+      maxAttempts: String(config.QUEUE_JOB_ATTEMPTS),
+      attemptsMade: "0",
+      currentAttempt: "1",
+      createdAt,
+      updatedAt: createdAt
+    });
+    await redis.expire(key, config.JOB_TTL_SECONDS);
+    await appendHistoryItem(payload.tenant.tenantId, jobId);
+
     await queue.add(jobId, payload, {
       jobId,
       attempts: config.QUEUE_JOB_ATTEMPTS,
@@ -324,16 +808,21 @@ app.post("/v1/jobs", async (request, reply) => {
 
     await appendAuditEvent(redis, config.AUDIT_STREAM_KEY, {
       actor: "api",
-      action: "job_enqueue_failed",
+      action: "job_submission_failed",
       tenantId: tenant.tenantId,
       jobId,
       metadata: {
-        error: error instanceof Error ? error.message : "unknown"
+        error: error instanceof Error ? error.message : "unknown",
+        traceId: request.traceId
       }
     });
 
-    request.log.error({ error }, "Queue enqueue failed");
-    return reply.code(503).send({ error: "queue_unavailable" });
+    request.log.error({ error, traceId: request.traceId }, "job_submission_failed");
+    return reply.code(503).send({ error: "submission_unavailable", traceId: request.traceId });
+  }
+
+  if (!payload) {
+    return reply.code(500).send({ error: "submission_unavailable", traceId: request.traceId });
   }
 
   await appendAuditEvent(redis, config.AUDIT_STREAM_KEY, {
@@ -342,16 +831,20 @@ app.post("/v1/jobs", async (request, reply) => {
     tenantId: tenant.tenantId,
     jobId,
     metadata: {
+      authType: tenant.authType,
+      subject: tenant.subject,
       language: payload.request.language,
       timeoutMs: payload.request.timeoutMs,
       memoryMb: payload.request.memoryMb,
       cpuMillicores: payload.request.cpuMillicores,
-      maxAttempts: config.QUEUE_JOB_ATTEMPTS
+      maxAttempts: config.QUEUE_JOB_ATTEMPTS,
+      traceId: request.traceId
     }
   });
 
   return reply.code(202).send({
     jobId,
+    traceId: request.traceId,
     status: "queued",
     statusUrl: `/v1/jobs/${jobId}`
   });
@@ -365,14 +858,18 @@ app.get("/v1/jobs", async (request, reply) => {
 
   const parsedQuery = listJobsQuerySchema.safeParse(request.query ?? {});
   if (!parsedQuery.success) {
-    return reply.code(400).send({ error: "validation_error", issues: parsedQuery.error.flatten() });
+    return reply.code(400).send({
+      error: "validation_error",
+      traceId: request.traceId,
+      issues: parsedQuery.error.flatten()
+    });
   }
 
   const limit = parsedQuery.data.limit ?? config.JOB_LIST_DEFAULT_LIMIT;
   const jobIds = await redis.zrevrange(tenantJobHistoryKey(tenant.tenantId), 0, limit - 1);
 
   if (jobIds.length === 0) {
-    return reply.send({ tenantId: tenant.tenantId, items: [] });
+    return reply.send({ tenantId: tenant.tenantId, traceId: request.traceId, items: [] });
   }
 
   const pipeline = redis.multi();
@@ -387,7 +884,7 @@ app.get("/v1/jobs", async (request, reply) => {
     .filter((data) => data?.status && data.tenantId === tenant.tenantId)
     .map(serializeJob);
 
-  return reply.send({ tenantId: tenant.tenantId, items });
+  return reply.send({ tenantId: tenant.tenantId, traceId: request.traceId, items });
 });
 
 app.get<{ Params: { jobId: string } }>("/v1/jobs/:jobId", async (request, reply) => {
@@ -400,7 +897,7 @@ app.get<{ Params: { jobId: string } }>("/v1/jobs/:jobId", async (request, reply)
   const data = await redis.hgetall(key);
 
   if (!data.status || data.tenantId !== tenant.tenantId) {
-    return reply.code(404).send({ error: "not_found" });
+    return reply.code(404).send({ error: "not_found", traceId: request.traceId });
   }
 
   return reply.send(serializeJob(data));
@@ -416,26 +913,50 @@ app.post<{ Params: { jobId: string } }>("/v1/jobs/:jobId/analyze", async (reques
   const data = await redis.hgetall(key);
 
   if (!data.status || data.tenantId !== tenant.tenantId) {
-    return reply.code(404).send({ error: "not_found" });
+    return reply.code(404).send({ error: "not_found", traceId: request.traceId });
   }
 
   const sourceCode = (data.sourceCode || "").slice(0, config.ANALYSIS_MAX_SOURCE_CHARS);
-  const analysis = generateExecutionAnalysis({
-    status: data.status,
-    request: {
-      language: normalizeLanguage(data.language),
-      sourceCode,
-      timeoutMs: toInt(data.timeoutMs, 3_000),
-      memoryMb: toInt(data.memoryMb, 128),
-      cpuMillicores: toInt(data.cpuMillicores, 256)
+  const { analysis, provider, fallbackReason } = await generateExecutionAnalysis(
+    {
+      status: data.status,
+      request: {
+        language: normalizeLanguage(data.language),
+        sourceCode,
+        timeoutMs: toInt(data.timeoutMs, 3_000),
+        memoryMb: toInt(data.memoryMb, 128),
+        cpuMillicores: toInt(data.cpuMillicores, 256)
+      },
+      result: parseExecutionResult(data.result),
+      error: data.error || null
     },
-    result: parseExecutionResult(data.result),
-    error: data.error || null
-  });
+    {
+      provider: config.AI_PROVIDER,
+      openAiApiKey: config.OPENAI_API_KEY,
+      model: config.OPENAI_MODEL,
+      timeoutMs: config.AI_ANALYSIS_TIMEOUT_MS,
+      retries: config.AI_ANALYSIS_RETRIES,
+      retryBackoffMs: config.AI_ANALYSIS_RETRY_BACKOFF_MS
+    }
+  );
+
+  if (fallbackReason && provider === "heuristic" && config.AI_PROVIDER === "openai") {
+    request.log.warn(
+      {
+        jobId: request.params.jobId,
+        tenantId: tenant.tenantId,
+        traceId: request.traceId,
+        fallbackReason
+      },
+      "ai_analysis_heuristic_fallback"
+    );
+  }
 
   await redis.hset(key, {
     analysis: JSON.stringify(analysis),
+    analysisProvider: provider,
     analysisUpdatedAt: analysis.generatedAt,
+    analysisFallbackReason: fallbackReason ?? "",
     updatedAt: nowIso()
   });
 
@@ -445,14 +966,19 @@ app.post<{ Params: { jobId: string } }>("/v1/jobs/:jobId/analyze", async (reques
     tenantId: tenant.tenantId,
     jobId: request.params.jobId,
     metadata: {
+      provider,
       confidence: analysis.confidence,
-      summary: analysis.summary.slice(0, 120)
+      summary: analysis.summary.slice(0, 120),
+      fallbackReason: fallbackReason ?? null,
+      traceId: request.traceId
     }
   });
 
   return reply.send({
     jobId: request.params.jobId,
+    traceId: request.traceId,
     status: data.status,
+    provider,
     analysis
   });
 });
@@ -465,7 +991,11 @@ app.get("/v1/audit", async (request, reply) => {
 
   const parsedQuery = listAuditQuerySchema.safeParse(request.query ?? {});
   if (!parsedQuery.success) {
-    return reply.code(400).send({ error: "validation_error", issues: parsedQuery.error.flatten() });
+    return reply.code(400).send({
+      error: "validation_error",
+      traceId: request.traceId,
+      issues: parsedQuery.error.flatten()
+    });
   }
 
   const limit = parsedQuery.data.limit ?? 20;
@@ -489,7 +1019,7 @@ app.get("/v1/audit", async (request, reply) => {
     .filter((event) => event.tenantId === tenant.tenantId)
     .slice(0, limit);
 
-  return reply.send({ tenantId: tenant.tenantId, events });
+  return reply.send({ tenantId: tenant.tenantId, traceId: request.traceId, events });
 });
 
 const start = async (): Promise<void> => {

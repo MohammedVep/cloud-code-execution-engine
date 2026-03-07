@@ -13,6 +13,21 @@ type AnalysisInput = {
   error: string | null;
 };
 
+export type AnalysisRuntimeConfig = {
+  provider: "none" | "openai";
+  openAiApiKey?: string;
+  model: string;
+  timeoutMs: number;
+  retries: number;
+  retryBackoffMs: number;
+};
+
+export type AnalysisOutput = {
+  analysis: ExecutionAnalysis;
+  provider: "heuristic" | "openai";
+  fallbackReason?: string;
+};
+
 const hasPattern = (value: string, patterns: RegExp[]): boolean =>
   patterns.some((pattern) => pattern.test(value));
 
@@ -43,7 +58,28 @@ const baseSuggestions = (language: string): string[] => {
   ];
 };
 
-export const generateExecutionAnalysis = (input: AnalysisInput): ExecutionAnalysis => {
+const toConfidence = (value: unknown): "low" | "medium" | "high" => {
+  if (value === "low" || value === "medium" || value === "high") {
+    return value;
+  }
+
+  return "medium";
+};
+
+const normalizeSuggestions = (value: unknown): string[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => String(item).trim())
+    .filter(Boolean)
+    .slice(0, 5);
+};
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+const generateHeuristicExecutionAnalysis = (input: AnalysisInput): ExecutionAnalysis => {
   const suggestions = [...baseSuggestions(input.request.language)];
 
   if (!input.result && ["queued", "retrying", "running", "dispatched"].includes(input.status)) {
@@ -139,4 +175,134 @@ export const generateExecutionAnalysis = (input: AnalysisInput): ExecutionAnalys
     confidence: input.error ? "medium" : "low",
     generatedAt: nowIso()
   });
+};
+
+const generateOpenAiExecutionAnalysis = async (
+  input: AnalysisInput,
+  config: { apiKey: string; model: string; timeoutMs: number }
+): Promise<ExecutionAnalysis> => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
+
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+        "content-type": "application/json"
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: config.model,
+        temperature: 0.2,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content:
+              "You analyze sandboxed code execution results. Return only JSON with keys: summary, explanation, suggestions (array of short actionable strings), confidence (low|medium|high). Keep it factual and concise."
+          },
+          {
+            role: "user",
+            content: JSON.stringify({
+              status: input.status,
+              request: {
+                language: input.request.language,
+                timeoutMs: input.request.timeoutMs,
+                memoryMb: input.request.memoryMb,
+                cpuMillicores: input.request.cpuMillicores,
+                sourceCode: input.request.sourceCode
+              },
+              result: input.result,
+              error: input.error
+            })
+          }
+        ]
+      })
+    });
+
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`openai_http_${response.status}:${detail.slice(0, 240)}`);
+    }
+
+    const payload = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string | null } }>;
+    };
+
+    const content = payload.choices?.[0]?.message?.content;
+    if (!content) {
+      throw new Error("openai_empty_response");
+    }
+
+    const decoded = JSON.parse(content) as Record<string, unknown>;
+    const parsed = executionAnalysisSchema.parse({
+      summary: String(decoded.summary ?? "Execution analysis"),
+      explanation: String(decoded.explanation ?? "No explanation was produced."),
+      suggestions: normalizeSuggestions(decoded.suggestions),
+      confidence: toConfidence(decoded.confidence),
+      generatedAt: nowIso()
+    });
+
+    if (parsed.suggestions.length > 0) {
+      return parsed;
+    }
+
+    return executionAnalysisSchema.parse({
+      ...parsed,
+      suggestions: ["No concrete suggestions were generated; review stderr/stdout and rerun with targeted test input."]
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+export const generateExecutionAnalysis = async (
+  input: AnalysisInput,
+  runtimeConfig: AnalysisRuntimeConfig
+): Promise<AnalysisOutput> => {
+  const heuristic = generateHeuristicExecutionAnalysis(input);
+
+  if (runtimeConfig.provider !== "openai") {
+    return { analysis: heuristic, provider: "heuristic", fallbackReason: "ai_provider_disabled" };
+  }
+
+  const apiKey = runtimeConfig.openAiApiKey?.trim();
+  if (!apiKey) {
+    return { analysis: heuristic, provider: "heuristic", fallbackReason: "missing_openai_api_key" };
+  }
+
+  let lastError: string | null = null;
+  const attempts = Math.max(1, runtimeConfig.retries + 1);
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const aiAnalysis = await generateOpenAiExecutionAnalysis(input, {
+        apiKey,
+        model: runtimeConfig.model,
+        timeoutMs: runtimeConfig.timeoutMs
+      });
+
+      return { analysis: aiAnalysis, provider: "openai" };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message.slice(0, 180) : "openai_unknown_failure";
+      if (attempt < attempts) {
+        await sleep(runtimeConfig.retryBackoffMs * attempt);
+      }
+    }
+  }
+
+  if (lastError) {
+    return {
+      analysis: heuristic,
+      provider: "heuristic",
+      fallbackReason: lastError
+    };
+  }
+
+  return {
+    analysis: heuristic,
+    provider: "heuristic",
+    fallbackReason: "openai_unknown_failure"
+  };
 };

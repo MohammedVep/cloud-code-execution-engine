@@ -1,9 +1,11 @@
 import { ECSClient } from "@aws-sdk/client-ecs";
+import { CloudWatchClient, PutMetricDataCommand } from "@aws-sdk/client-cloudwatch";
 import { queueJobPayloadSchema } from "@ccee/common";
-import { Worker } from "bullmq";
+import { Queue, Worker } from "bullmq";
 import { Redis } from "ioredis";
 
 import { config } from "./config.js";
+import { getQueueDepth } from "./queue-metrics.js";
 import { dispatchEcsRunner } from "./runners/ecs-runner.js";
 import { executeLocalRunner } from "./runners/local-runner.js";
 import { markCompleted, markDispatched, markFailed, markRetrying, markRunning } from "./store.js";
@@ -21,6 +23,42 @@ const redisConnection = {
 
 const redis = new Redis(redisConnection);
 const ecsClient = new ECSClient({ region: config.awsRegion });
+const cloudWatchClient = new CloudWatchClient({ region: config.awsRegion });
+const queue = new Queue(config.queueName, { connection: redisConnection });
+
+const publishQueueDepthMetric = async (): Promise<void> => {
+  if (config.executionBackend !== "ecs") {
+    return;
+  }
+
+  try {
+    const [waitingCount, activeCount] = await Promise.all([queue.getWaitingCount(), queue.getActiveCount()]);
+    const queueDepth = getQueueDepth(waitingCount, activeCount);
+
+    await cloudWatchClient.send(
+      new PutMetricDataCommand({
+        Namespace: config.queueDepthMetric.namespace,
+        MetricData: [
+          {
+            MetricName: config.queueDepthMetric.metricName,
+            Dimensions: [
+              { Name: "QueueName", Value: config.queueName },
+              { Name: "Service", Value: config.queueDepthMetric.serviceName }
+            ],
+            Unit: "Count",
+            Value: queueDepth
+          }
+        ]
+      })
+    );
+  } catch (error) {
+    console.error("queue_depth_metric_publish_failed", error);
+  }
+};
+
+const queueMetricTimer = setInterval(() => {
+  void publishQueueDepthMetric();
+}, config.queueDepthMetric.publishIntervalMs);
 
 const worker = new Worker(
   config.queueName,
@@ -28,7 +66,14 @@ const worker = new Worker(
     const payload = queueJobPayloadSchema.parse(job.data);
     const attemptNumber = job.attemptsMade + 1;
 
-    await markRunning(redis, payload.jobId, payload.tenant.tenantId, config.auditStreamKey, attemptNumber);
+    await markRunning(
+      redis,
+      payload.jobId,
+      payload.tenant.tenantId,
+      config.auditStreamKey,
+      attemptNumber,
+      payload.traceId
+    );
 
     if (config.executionBackend === "local") {
       const result = await executeLocalRunner(payload, config.runnerImage, config.maxStdioBytes);
@@ -37,9 +82,14 @@ const worker = new Worker(
         payload.jobId,
         payload.tenant.tenantId,
         result,
+        {
+          cpuMillicores: payload.request.cpuMillicores,
+          memoryMb: payload.request.memoryMb
+        },
         config.jobTtlSeconds,
         config.auditStreamKey,
-        true
+        true,
+        payload.traceId
       );
       return result;
     }
@@ -51,7 +101,8 @@ const worker = new Worker(
       payload.tenant.tenantId,
       taskArn,
       config.jobTtlSeconds,
-      config.auditStreamKey
+      config.auditStreamKey,
+      payload.traceId
     );
 
     return { taskArn };
@@ -66,6 +117,7 @@ worker.on("ready", () => {
   console.log(
     `Worker ready. queue=${config.queueName} backend=${config.executionBackend} attempts=${config.queueJobAttempts} backoffMs=${config.queueRetryBackoffMs}`
   );
+  void publishQueueDepthMetric();
 });
 
 worker.on("failed", async (job, error) => {
@@ -84,7 +136,8 @@ worker.on("failed", async (job, error) => {
       parsedPayload.data.tenant.tenantId,
       error.message,
       attemptsMade + 1,
-      config.auditStreamKey
+      config.auditStreamKey,
+      parsedPayload.data.traceId
     );
     console.error(`Job ${parsedPayload.data.jobId} failed attempt ${attemptsMade}/${maxAttempts}`, error);
     return;
@@ -97,13 +150,16 @@ worker.on("failed", async (job, error) => {
     error.message,
     config.jobTtlSeconds,
     config.auditStreamKey,
-    true
+    true,
+    parsedPayload.data.traceId
   );
   console.error(`Job ${parsedPayload.data.jobId} failed`, error);
 });
 
 const shutdown = async (): Promise<void> => {
+  clearInterval(queueMetricTimer);
   await worker.close();
+  await queue.close();
   redis.disconnect();
 };
 

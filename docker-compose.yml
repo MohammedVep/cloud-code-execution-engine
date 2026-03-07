@@ -14,6 +14,17 @@ services:
     environment:
       API_PORT: 8080
       REDIS_URL: redis://redis:6379
+      AUTH_MODE: api_key
+      JWT_JWKS_URL: ""
+      JWT_ISSUER: ""
+      JWT_AUDIENCE: ""
+      JWT_TENANT_CLAIM: custom:tenant_id
+      JWT_SUBJECT_CLAIM: sub
+      RATE_LIMIT_REQUESTS_PER_MINUTE: 240
+      RATE_LIMIT_WINDOW_SECONDS: 60
+      SUBMIT_RATE_LIMIT_PER_MINUTE: 60
+      MAX_SOURCE_CODE_BYTES: 100000
+      MAX_STDIN_BYTES: 100000
       JOB_QUEUE_NAME: code-jobs
       JOB_TTL_SECONDS: 86400
       JOB_HISTORY_MAX: 500
@@ -24,6 +35,13 @@ services:
       QUEUE_JOB_ATTEMPTS: 3
       QUEUE_RETRY_BACKOFF_MS: 1000
       ANALYSIS_MAX_SOURCE_CHARS: 8000
+      AI_PROVIDER: none
+      OPENAI_MODEL: gpt-4.1-mini
+      AI_ANALYSIS_TIMEOUT_MS: 10000
+      AI_ANALYSIS_RETRIES: 2
+      AI_ANALYSIS_RETRY_BACKOFF_MS: 500
+      OPENAI_API_KEY: ""
+      TENANT_POLICIES_JSON: "{}"
       TENANT_API_KEYS_JSON: '{"dev-local-key":{"tenantId":"tenant-dev","maxConcurrentJobs":5,"maxDailyJobs":1000}}'
     ports:
       - "8080:8080"
@@ -46,6 +64,10 @@ services:
       RUNNER_IMAGE: ccee-runner:local
       MAX_STDIO_BYTES: 65536
       AUDIT_STREAM_KEY: audit:events
+      QUEUE_DEPTH_METRIC_NAMESPACE: CCEE
+      QUEUE_DEPTH_METRIC_NAME: QueueDepth
+      QUEUE_DEPTH_PUBLISH_INTERVAL_MS: 30000
+      QUEUE_DEPTH_METRIC_SERVICE_NAME: worker
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:

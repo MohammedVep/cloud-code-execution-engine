@@ -1,5 +1,8 @@
 import {
+  classifyFailureCategory,
+  estimateExecutionCostUsd,
   nowIso,
+  tenantDailyCostKey,
   tenantActiveJobsKey,
   type ExecutionResult,
   redisJobKey
@@ -47,28 +50,46 @@ const decrementActiveQuota = async (redis: Redis, tenantId: string): Promise<voi
   await redis.eval(script, 1, tenantActiveJobsKey(tenantId));
 };
 
+const incrementDailyCost = async (
+  redis: Redis,
+  tenantId: string,
+  timestampIso: string,
+  amountUsd: number,
+  ttlSeconds: number
+): Promise<void> => {
+  const dateKey = timestampIso.slice(0, 10);
+  const key = tenantDailyCostKey(tenantId, dateKey);
+  await redis.incrbyfloat(key, amountUsd);
+  await redis.expire(key, ttlSeconds);
+};
+
 export const markRunning = async (
   redis: Redis,
   jobId: string,
   tenantId: string,
   auditStreamKey: string,
-  attemptNumber: number
+  attemptNumber: number,
+  traceId?: string
 ): Promise<void> => {
   const timestamp = nowIso();
-  await redis.hset(redisJobKey(jobId), {
+  const updates: Record<string, string> = {
     status: "running",
     attemptsMade: String(attemptNumber),
     currentAttempt: String(attemptNumber),
     error: "",
     startedAt: timestamp,
     updatedAt: timestamp
-  });
+  };
+  if (traceId) {
+    updates.traceId = traceId;
+  }
+  await redis.hset(redisJobKey(jobId), updates);
 
   await appendAuditEvent(redis, auditStreamKey, {
     action: "job_running",
     tenantId,
     jobId,
-    metadata: { attemptNumber }
+    metadata: { attemptNumber, traceId: traceId ?? null }
   });
 };
 
@@ -78,23 +99,28 @@ export const markRetrying = async (
   tenantId: string,
   message: string,
   nextAttemptNumber: number,
-  auditStreamKey: string
+  auditStreamKey: string,
+  traceId?: string
 ): Promise<void> => {
   const timestamp = nowIso();
-  await redis.hset(redisJobKey(jobId), {
+  const updates: Record<string, string> = {
     status: "retrying",
     attemptsMade: String(Math.max(1, nextAttemptNumber - 1)),
     error: message,
     retryScheduledAt: timestamp,
     currentAttempt: String(nextAttemptNumber),
     updatedAt: timestamp
-  });
+  };
+  if (traceId) {
+    updates.traceId = traceId;
+  }
+  await redis.hset(redisJobKey(jobId), updates);
 
   await appendAuditEvent(redis, auditStreamKey, {
     action: "job_retrying",
     tenantId,
     jobId,
-    metadata: { nextAttemptNumber, error: message }
+    metadata: { nextAttemptNumber, error: message, traceId: traceId ?? null }
   });
 };
 
@@ -104,21 +130,26 @@ export const markDispatched = async (
   tenantId: string,
   taskArn: string,
   ttlSeconds: number,
-  auditStreamKey: string
+  auditStreamKey: string,
+  traceId?: string
 ): Promise<void> => {
   const timestamp = nowIso();
-  await redis.hset(redisJobKey(jobId), {
+  const updates: Record<string, string> = {
     status: "dispatched",
     taskArn,
     updatedAt: timestamp
-  });
+  };
+  if (traceId) {
+    updates.traceId = traceId;
+  }
+  await redis.hset(redisJobKey(jobId), updates);
   await redis.expire(redisJobKey(jobId), ttlSeconds);
 
   await appendAuditEvent(redis, auditStreamKey, {
     action: "job_dispatched",
     tenantId,
     jobId,
-    metadata: { taskArn }
+    metadata: { taskArn, traceId: traceId ?? null }
   });
 };
 
@@ -127,21 +158,42 @@ export const markCompleted = async (
   jobId: string,
   tenantId: string,
   result: ExecutionResult,
+  request: {
+    cpuMillicores: number;
+    memoryMb: number;
+  },
   ttlSeconds: number,
   auditStreamKey: string,
-  releaseQuota: boolean
+  releaseQuota: boolean,
+  traceId?: string
 ): Promise<void> => {
   const timestamp = nowIso();
-  await redis.hset(redisJobKey(jobId), {
+  const estimatedCostUsd = estimateExecutionCostUsd({
+    durationMs: result.durationMs,
+    cpuMillicores: request.cpuMillicores,
+    memoryMb: request.memoryMb
+  });
+  const failureCategory = classifyFailureCategory({ result });
+
+  const updates: Record<string, string> = {
     status: result.status,
     result: JSON.stringify(result),
+    estimatedCostUsd: estimatedCostUsd.toFixed(8),
+    billableDurationMs: String(result.durationMs),
+    failureCategory,
+    costModelVersion: "fargate-v1",
     currentAttempt: "",
     retryScheduledAt: "",
     completedAt: timestamp,
     updatedAt: timestamp,
     error: ""
-  });
+  };
+  if (traceId) {
+    updates.traceId = traceId;
+  }
+  await redis.hset(redisJobKey(jobId), updates);
   await redis.expire(redisJobKey(jobId), ttlSeconds);
+  await incrementDailyCost(redis, tenantId, timestamp, estimatedCostUsd, ttlSeconds);
 
   if (releaseQuota) {
     await decrementActiveQuota(redis, tenantId);
@@ -154,7 +206,10 @@ export const markCompleted = async (
     metadata: {
       timedOut: result.timedOut,
       exitCode: result.exitCode ?? -1,
-      durationMs: result.durationMs
+      durationMs: result.durationMs,
+      estimatedCostUsd,
+      failureCategory,
+      traceId: traceId ?? null
     }
   });
 };
@@ -166,17 +221,26 @@ export const markFailed = async (
   message: string,
   ttlSeconds: number,
   auditStreamKey: string,
-  releaseQuota: boolean
+  releaseQuota: boolean,
+  traceId?: string
 ): Promise<void> => {
   const timestamp = nowIso();
-  await redis.hset(redisJobKey(jobId), {
+  const updates: Record<string, string> = {
     status: "failed",
+    estimatedCostUsd: "0.00000000",
+    billableDurationMs: "0",
+    failureCategory: classifyFailureCategory({ errorMessage: message }),
+    costModelVersion: "fargate-v1",
     currentAttempt: "",
     retryScheduledAt: "",
     error: message,
     completedAt: timestamp,
     updatedAt: timestamp
-  });
+  };
+  if (traceId) {
+    updates.traceId = traceId;
+  }
+  await redis.hset(redisJobKey(jobId), updates);
   await redis.expire(redisJobKey(jobId), ttlSeconds);
 
   if (releaseQuota) {
@@ -187,6 +251,6 @@ export const markFailed = async (
     action: "job_failed",
     tenantId,
     jobId,
-    metadata: { error: message }
+    metadata: { error: message, traceId: traceId ?? null }
   });
 };

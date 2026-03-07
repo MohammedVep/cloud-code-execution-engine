@@ -20,5 +20,6 @@ COPY --from=builder /app/services/api/public ./services/api/public
 COPY --from=builder /app/services/api/package.json ./services/api/package.json
 
 RUN npm install --omit=dev --workspace @ccee/common --workspace @ccee/api
+RUN chmod -R a+rX /app
 
 CMD ["node", "services/api/dist/index.js"]

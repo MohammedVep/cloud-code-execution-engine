@@ -17,7 +17,11 @@ const baseSchema = z.object({
   ECS_SUBNET_IDS: z.string().optional(),
   ECS_SECURITY_GROUP_IDS: z.string().optional(),
   ECS_ASSIGN_PUBLIC_IP: z.enum(["ENABLED", "DISABLED"]).default("DISABLED"),
-  ECS_RUNNER_CONTAINER_NAME: z.string().default("runner")
+  ECS_RUNNER_CONTAINER_NAME: z.string().default("runner"),
+  QUEUE_DEPTH_METRIC_NAMESPACE: z.string().min(1).default("CCEE"),
+  QUEUE_DEPTH_METRIC_NAME: z.string().min(1).default("QueueDepth"),
+  QUEUE_DEPTH_PUBLISH_INTERVAL_MS: z.coerce.number().int().min(5_000).max(300_000).default(30_000),
+  QUEUE_DEPTH_METRIC_SERVICE_NAME: z.string().min(1).default("worker")
 });
 
 const parsed = baseSchema.parse(process.env);
@@ -64,7 +68,13 @@ export const config = {
   runnerImage: parsed.RUNNER_IMAGE,
   maxStdioBytes: parsed.MAX_STDIO_BYTES,
   awsRegion: parsed.AWS_REGION,
-  ecs: ecsConfig
+  ecs: ecsConfig,
+  queueDepthMetric: {
+    namespace: parsed.QUEUE_DEPTH_METRIC_NAMESPACE,
+    metricName: parsed.QUEUE_DEPTH_METRIC_NAME,
+    publishIntervalMs: parsed.QUEUE_DEPTH_PUBLISH_INTERVAL_MS,
+    serviceName: parsed.QUEUE_DEPTH_METRIC_SERVICE_NAME
+  }
 };
 
 export type WorkerConfig = typeof config;

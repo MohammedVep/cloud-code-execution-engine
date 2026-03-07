@@ -5,16 +5,21 @@ Secure, multi-tenant, asynchronous code execution platform with recruiter-facing
 ## What is implemented
 
 - `services/api`
-  - Auth (`x-api-key`) + tenant isolation
+  - Auth (`api_key`, `jwt`, or `hybrid`) + tenant isolation
+  - JWT/Cognito verification via JWKS + issuer/audience checks
+  - Per-tenant rate limiting with Redis counters
   - Quotas (`maxConcurrentJobs`, `maxDailyJobs`)
   - Job submit + polling (`POST /v1/jobs`, `GET /v1/jobs/:jobId`)
   - Job history (`GET /v1/jobs`)
+  - Cost visibility (`GET /v1/costs`)
   - Tenant audit feed (`GET /v1/audit`)
   - Execution analysis (`POST /v1/jobs/:jobId/analyze`)
+  - AI-backed analysis mode (`AI_PROVIDER=openai`) with retries/backoff and safe heuristic fallback
   - Recruiter UI at `/`
 - `services/worker`
   - BullMQ queue consumer
   - Async dispatch to local Docker runner or ECS/Fargate runner tasks
+  - Queue-depth CloudWatch metric publishing (`CCEE/QueueDepth`)
   - Retry + exponential backoff for transient failures
 - `services/runner`
   - Sandboxed execution runtime for `javascript`, `python`, `java`
@@ -45,9 +50,12 @@ Secure, multi-tenant, asynchronous code execution platform with recruiter-facing
 
 - **Tenant auth boundary:** every read/write requires valid API key and tenant match; cross-tenant job fetches return `404`.
 - **Quota boundary:** atomic quota reservation blocks bursts (`maxConcurrentJobs`, `maxDailyJobs`).
+- **Rate-limit boundary:** per-tenant request ceilings in Redis absorb abusive API polling patterns.
+- **Submit burst boundary:** separate per-tenant submit limiter (`SUBMIT_RATE_LIMIT_PER_MINUTE`) blocks enqueue floods.
+- **Payload boundary:** API rejects oversized `sourceCode`/`stdin` before enqueue (`MAX_SOURCE_CODE_BYTES`, `MAX_STDIN_BYTES`).
 - **Resource boundary:** CPU/memory/pid/file/time limits bound compute abuse and fork bombs.
 - **Data boundary:** outputs are truncated (`MAX_STDIO_BYTES`) to block log-exhaustion abuse.
-- **Audit boundary:** auth failures, retries, state transitions, and completions are appended to an audit stream for traceability.
+- **Audit boundary:** auth failures, retries, state transitions, and abuse rejections are appended to an audit stream.
 
 ## Async architecture
 
@@ -56,6 +64,89 @@ Secure, multi-tenant, asynchronous code execution platform with recruiter-facing
 3. Worker consumes queue job and marks running.
 4. Worker executes locally or dispatches ECS task (`EXECUTION_BACKEND=ecs`).
 5. Runner persists result; API polling endpoint exposes state transitions until terminal.
+
+### Architecture sequence diagram
+
+```mermaid
+sequenceDiagram
+  participant Client
+  participant API
+  participant Redis
+  participant QueueWorker as Worker
+  participant Runner as ECS Runner Task
+  participant CW as CloudWatch
+
+  Client->>API: POST /v1/jobs
+  API->>Redis: auth/rate/submit/quota checks + persist queued job
+  API->>Redis: enqueue BullMQ job
+  QueueWorker->>Redis: consume queue + mark running/dispatched
+  QueueWorker->>Runner: RunTask (isolated execution)
+  Runner->>Redis: persist result + audit events
+  QueueWorker->>CW: publish QueueDepth metric
+  Client->>API: GET /v1/jobs/:id
+  API->>Redis: fetch job state/result
+```
+
+## How safety, scaling, and abuse prevention work
+
+### How safety works
+
+- Untrusted code runs in isolated runner containers/tasks with non-root users, dropped Linux capabilities, and `no-new-privileges`.
+- Runtime limits are enforced for CPU, memory, process count, file size, and wall-clock timeout, with hard kill on timeout.
+- Local backend also disables container networking (`--network none`) to block outbound access from user code.
+
+### How scaling works
+
+- Workers publish queue depth (`waiting + active`) to CloudWatch metric namespace `CCEE` (metric `QueueDepth` by default).
+- Terraform provisions ECS Application Auto Scaling with CloudWatch alarms:
+  - high queue depth alarm triggers step scale-out
+  - low queue depth alarm triggers step scale-in
+- Worker ECS service runs in private subnets with `assign_public_ip = false`; runner tasks remain ephemeral per execution.
+
+### How abuse is prevented
+
+- Separate API controls for read traffic and submit traffic:
+  - request rate limit (`RATE_LIMIT_REQUESTS_PER_MINUTE`)
+  - submit burst limit (`SUBMIT_RATE_LIMIT_PER_MINUTE`)
+- Submission payload size guardrails reject oversized source/stdin (`MAX_SOURCE_CODE_BYTES`, `MAX_STDIN_BYTES`).
+- Quota controls and audit events capture denied attempts (`submission_rejected_size`, `submission_rejected_burst`, `submission_rejected_quota`).
+
+## AI system
+
+Execution analysis supports two modes:
+
+- `AI_PROVIDER=none` (default): deterministic heuristic analysis
+- `AI_PROVIDER=openai`: calls OpenAI model and stores provider-tagged analysis (`analysisProvider=openai`), with automatic fallback to heuristic mode on timeout/API errors
+
+Relevant env vars:
+
+- `AI_PROVIDER` (`none` or `openai`)
+- `OPENAI_API_KEY` (required when `AI_PROVIDER=openai`)
+- `OPENAI_MODEL` (default `gpt-4.1-mini`)
+- `AI_ANALYSIS_TIMEOUT_MS` (default `10000`)
+- `AI_ANALYSIS_RETRIES` (default `2`)
+- `AI_ANALYSIS_RETRY_BACKOFF_MS` (default `500`)
+
+## Auth + rate limit config
+
+- `AUTH_MODE` (`api_key`, `jwt`, `hybrid`)
+- `JWT_JWKS_URL`, `JWT_ISSUER`, `JWT_AUDIENCE` for JWT validation
+- `JWT_TENANT_CLAIM` (default `custom:tenant_id`)
+- `JWT_SUBJECT_CLAIM` (default `sub`)
+- `TENANT_POLICIES_JSON` (tenant quotas for JWT mode)
+- `TENANT_API_KEYS_JSON` (API key map + quotas)
+- `RATE_LIMIT_REQUESTS_PER_MINUTE` (default `240`)
+- `RATE_LIMIT_WINDOW_SECONDS` (default `60`)
+- `SUBMIT_RATE_LIMIT_PER_MINUTE` (default `60`)
+- `MAX_SOURCE_CODE_BYTES` (default `100000`)
+- `MAX_STDIN_BYTES` (default `100000`)
+
+Worker metric config:
+
+- `QUEUE_DEPTH_METRIC_NAMESPACE` (default `CCEE`)
+- `QUEUE_DEPTH_METRIC_NAME` (default `QueueDepth`)
+- `QUEUE_DEPTH_PUBLISH_INTERVAL_MS` (default `30000`)
+- `QUEUE_DEPTH_METRIC_SERVICE_NAME` (default `worker`)
 
 ## Local run
 
@@ -75,6 +166,9 @@ Start:
 
 ```bash
 cp .env.example .env
+# Optional: enable model-backed analysis
+# AI_PROVIDER=openai
+# OPENAI_API_KEY=sk-...
 ./scripts/local-up.sh
 ```
 
@@ -123,13 +217,17 @@ Stop:
 - `GET /health`
 - `GET /` (frontend)
 - `GET /v1/quotas`
+- `GET /v1/costs?days=7`
 - `POST /v1/jobs`
 - `GET /v1/jobs/:jobId`
 - `GET /v1/jobs?limit=20`
 - `GET /v1/audit?limit=20`
 - `POST /v1/jobs/:jobId/analyze`
 
-All `/v1/*` endpoints require `x-api-key`.
+All `/v1/*` endpoints are protected by configured auth mode:
+- `AUTH_MODE=api_key`: require `x-api-key`.
+- `AUTH_MODE=jwt`: require `Authorization: Bearer <JWT>`.
+- `AUTH_MODE=hybrid`: accepts JWT when provided, otherwise API key.
 
 ## Terraform production notes
 
@@ -137,6 +235,7 @@ The Terraform module provisions:
 
 - ALB + API ECS service
 - Worker ECS service with `EXECUTION_BACKEND=ecs`
+- ECS Application Auto Scaling target/policies + queue-depth CloudWatch alarms for worker service
 - Runner task definition
 - ElastiCache Redis (TLS)
 - IAM + SG boundaries for worker/runner/API/Redis
@@ -149,6 +248,29 @@ Key required vars:
 - `api_image`
 - `worker_image`
 - `runner_image`
+
+AI-specific vars (optional):
+
+- `ai_provider` (`none` or `openai`)
+- `openai_api_key`
+- `openai_model`
+- `ai_analysis_timeout_ms`
+
+Auth/rate-limit vars (optional):
+
+- `auth_mode` (`api_key`, `jwt`, `hybrid`)
+- `jwt_jwks_url`, `jwt_issuer`, `jwt_audience`
+- `jwt_tenant_claim`, `jwt_subject_claim`
+- `tenant_policies_json`
+- `rate_limit_requests_per_minute`
+- `rate_limit_window_seconds`
+- `submit_rate_limit_per_minute`
+- `max_source_code_bytes`
+- `max_stdin_bytes`
+- `worker_min_capacity`, `worker_max_capacity`
+- `worker_scale_out_queue_depth`, `worker_scale_in_queue_depth`
+- `queue_depth_alarm_period_seconds`, `queue_depth_eval_periods`
+- `queue_depth_metric_namespace`, `queue_depth_metric_name`, `queue_depth_publish_interval_ms`
 
 Example:
 

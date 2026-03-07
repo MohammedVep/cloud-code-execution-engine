@@ -21,5 +21,6 @@ COPY --from=builder /app/services/worker/dist ./services/worker/dist
 COPY --from=builder /app/services/worker/package.json ./services/worker/package.json
 
 RUN npm install --omit=dev --workspace @ccee/common --workspace @ccee/worker
+RUN chmod -R a+rX /app
 
 CMD ["node", "services/worker/dist/index.js"]

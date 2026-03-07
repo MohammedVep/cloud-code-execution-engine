@@ -1,5 +1,6 @@
 locals {
   name_prefix = var.project_name
+  worker_service_name = "${var.project_name}-worker"
   tags = merge(
     {
       Project   = var.project_name
@@ -367,6 +368,17 @@ resource "aws_ecs_task_definition" "api" {
       environment = [
         { name = "API_PORT", value = "8080" },
         { name = "REDIS_URL", value = local.redis_url },
+        { name = "AUTH_MODE", value = var.auth_mode },
+        { name = "JWT_JWKS_URL", value = var.jwt_jwks_url },
+        { name = "JWT_ISSUER", value = var.jwt_issuer },
+        { name = "JWT_AUDIENCE", value = var.jwt_audience },
+        { name = "JWT_TENANT_CLAIM", value = var.jwt_tenant_claim },
+        { name = "JWT_SUBJECT_CLAIM", value = var.jwt_subject_claim },
+        { name = "RATE_LIMIT_REQUESTS_PER_MINUTE", value = tostring(var.rate_limit_requests_per_minute) },
+        { name = "RATE_LIMIT_WINDOW_SECONDS", value = tostring(var.rate_limit_window_seconds) },
+        { name = "SUBMIT_RATE_LIMIT_PER_MINUTE", value = tostring(var.submit_rate_limit_per_minute) },
+        { name = "MAX_SOURCE_CODE_BYTES", value = tostring(var.max_source_code_bytes) },
+        { name = "MAX_STDIN_BYTES", value = tostring(var.max_stdin_bytes) },
         { name = "JOB_QUEUE_NAME", value = var.job_queue_name },
         { name = "JOB_TTL_SECONDS", value = tostring(var.job_ttl_seconds) },
         { name = "JOB_HISTORY_MAX", value = tostring(var.job_history_max) },
@@ -377,6 +389,13 @@ resource "aws_ecs_task_definition" "api" {
         { name = "QUEUE_JOB_ATTEMPTS", value = tostring(var.queue_job_attempts) },
         { name = "QUEUE_RETRY_BACKOFF_MS", value = tostring(var.queue_retry_backoff_ms) },
         { name = "ANALYSIS_MAX_SOURCE_CHARS", value = tostring(var.analysis_max_source_chars) },
+        { name = "AI_PROVIDER", value = var.ai_provider },
+        { name = "OPENAI_MODEL", value = var.openai_model },
+        { name = "AI_ANALYSIS_TIMEOUT_MS", value = tostring(var.ai_analysis_timeout_ms) },
+        { name = "AI_ANALYSIS_RETRIES", value = tostring(var.ai_analysis_retries) },
+        { name = "AI_ANALYSIS_RETRY_BACKOFF_MS", value = tostring(var.ai_analysis_retry_backoff_ms) },
+        { name = "OPENAI_API_KEY", value = var.openai_api_key },
+        { name = "TENANT_POLICIES_JSON", value = var.tenant_policies_json },
         { name = "TENANT_API_KEYS_JSON", value = var.tenant_api_keys_json }
       ]
     }
@@ -437,10 +456,14 @@ resource "aws_ecs_task_definition" "worker" {
         { name = "ECS_TASK_DEFINITION_ARN", value = aws_ecs_task_definition.runner.arn },
         { name = "ECS_SUBNET_IDS", value = join(",", var.private_subnet_ids) },
         { name = "ECS_SECURITY_GROUP_IDS", value = aws_security_group.runner.id },
-        { name = "ECS_ASSIGN_PUBLIC_IP", value = "ENABLED" },
+        { name = "ECS_ASSIGN_PUBLIC_IP", value = var.worker_assign_public_ip ? "ENABLED" : "DISABLED" },
         { name = "ECS_RUNNER_CONTAINER_NAME", value = "runner" },
         { name = "MAX_STDIO_BYTES", value = tostring(var.max_stdio_bytes) },
-        { name = "AUDIT_STREAM_KEY", value = var.audit_stream_key }
+        { name = "AUDIT_STREAM_KEY", value = var.audit_stream_key },
+        { name = "QUEUE_DEPTH_METRIC_NAMESPACE", value = var.queue_depth_metric_namespace },
+        { name = "QUEUE_DEPTH_METRIC_NAME", value = var.queue_depth_metric_name },
+        { name = "QUEUE_DEPTH_PUBLISH_INTERVAL_MS", value = tostring(var.queue_depth_publish_interval_ms) },
+        { name = "QUEUE_DEPTH_METRIC_SERVICE_NAME", value = local.worker_service_name }
       ]
     }
   ])
@@ -526,7 +549,7 @@ resource "aws_ecs_service" "api" {
 }
 
 resource "aws_ecs_service" "worker" {
-  name            = "${local.name_prefix}-worker"
+  name            = local.worker_service_name
   cluster         = aws_ecs_cluster.this.id
   task_definition = aws_ecs_task_definition.worker.arn
   desired_count   = var.worker_desired_count
@@ -539,8 +562,92 @@ resource "aws_ecs_service" "worker" {
   network_configuration {
     subnets          = var.private_subnet_ids
     security_groups  = [aws_security_group.worker.id]
-    assign_public_ip = true
+    assign_public_ip = var.worker_assign_public_ip
   }
 
   tags = local.tags
+}
+
+resource "aws_appautoscaling_target" "worker" {
+  max_capacity       = var.worker_max_capacity
+  min_capacity       = var.worker_min_capacity
+  resource_id        = "service/${aws_ecs_cluster.this.name}/${aws_ecs_service.worker.name}"
+  scalable_dimension = "ecs:service:DesiredCount"
+  service_namespace  = "ecs"
+}
+
+resource "aws_appautoscaling_policy" "worker_scale_out" {
+  name               = "${local.name_prefix}-worker-scale-out"
+  policy_type        = "StepScaling"
+  resource_id        = aws_appautoscaling_target.worker.resource_id
+  scalable_dimension = aws_appautoscaling_target.worker.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.worker.service_namespace
+
+  step_scaling_policy_configuration {
+    adjustment_type         = "ChangeInCapacity"
+    cooldown                = 60
+    metric_aggregation_type = "Average"
+
+    step_adjustment {
+      metric_interval_lower_bound = 0
+      scaling_adjustment          = 1
+    }
+  }
+}
+
+resource "aws_appautoscaling_policy" "worker_scale_in" {
+  name               = "${local.name_prefix}-worker-scale-in"
+  policy_type        = "StepScaling"
+  resource_id        = aws_appautoscaling_target.worker.resource_id
+  scalable_dimension = aws_appautoscaling_target.worker.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.worker.service_namespace
+
+  step_scaling_policy_configuration {
+    adjustment_type         = "ChangeInCapacity"
+    cooldown                = 120
+    metric_aggregation_type = "Average"
+
+    step_adjustment {
+      metric_interval_upper_bound = 0
+      scaling_adjustment          = -1
+    }
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "worker_queue_depth_high" {
+  alarm_name          = "${local.name_prefix}-worker-queue-depth-high"
+  alarm_description   = "Scale out worker service when queue depth is sustained"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = var.queue_depth_eval_periods
+  metric_name         = var.queue_depth_metric_name
+  namespace           = var.queue_depth_metric_namespace
+  period              = var.queue_depth_alarm_period_seconds
+  statistic           = "Average"
+  threshold           = var.worker_scale_out_queue_depth
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_appautoscaling_policy.worker_scale_out.arn]
+
+  dimensions = {
+    QueueName = var.job_queue_name
+    Service   = local.worker_service_name
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "worker_queue_depth_low" {
+  alarm_name          = "${local.name_prefix}-worker-queue-depth-low"
+  alarm_description   = "Scale in worker service when queue depth drains"
+  comparison_operator = "LessThanOrEqualToThreshold"
+  evaluation_periods  = var.queue_depth_eval_periods
+  metric_name         = var.queue_depth_metric_name
+  namespace           = var.queue_depth_metric_namespace
+  period              = var.queue_depth_alarm_period_seconds
+  statistic           = "Average"
+  threshold           = var.worker_scale_in_queue_depth
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_appautoscaling_policy.worker_scale_in.arn]
+
+  dimensions = {
+    QueueName = var.job_queue_name
+    Service   = local.worker_service_name
+  }
 }
