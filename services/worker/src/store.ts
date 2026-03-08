@@ -254,3 +254,26 @@ export const markFailed = async (
     metadata: { error: message, traceId: traceId ?? null }
   });
 };
+
+export const markDeadLettered = async (
+  redis: Redis,
+  jobId: string,
+  tenantId: string,
+  dlqJobId: string,
+  reason: string,
+  auditStreamKey: string,
+  traceId?: string
+): Promise<void> => {
+  const timestamp = nowIso();
+  await redis.hset(redisJobKey(jobId), {
+    deadLetteredAt: timestamp,
+    updatedAt: timestamp
+  });
+
+  await appendAuditEvent(redis, auditStreamKey, {
+    action: "job_dead_lettered",
+    tenantId,
+    jobId,
+    metadata: { dlqJobId, reason, traceId: traceId ?? null }
+  });
+};

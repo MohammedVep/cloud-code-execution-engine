@@ -887,7 +887,7 @@ const submitExecutionHandler = async (request: FastifyRequest, reply: FastifyRep
       jobId,
       attempts: config.QUEUE_JOB_ATTEMPTS,
       backoff: {
-        type: "exponential",
+        type: "custom",
         delay: config.QUEUE_RETRY_BACKOFF_MS
       },
       removeOnComplete: {

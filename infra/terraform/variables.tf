@@ -259,6 +259,12 @@ variable "queue_retry_backoff_ms" {
   default     = 1000
 }
 
+variable "queue_retry_max_delay_ms" {
+  description = "Max delay (ms) for jittered exponential retries"
+  type        = number
+  default     = 60000
+}
+
 variable "max_stdio_bytes" {
   description = "Maximum stdout/stderr bytes captured per job"
   type        = number
@@ -281,6 +287,24 @@ variable "queue_depth_publish_interval_ms" {
   description = "Worker metric publish interval in milliseconds"
   type        = number
   default     = 30000
+}
+
+variable "dlq_queue_name" {
+  description = "Dead-letter queue name for exhausted retries"
+  type        = string
+  default     = "code-jobs-dlq"
+}
+
+variable "node_options" {
+  description = "Node.js runtime options for V8 tuning"
+  type        = string
+  default     = "--max-old-space-size=512"
+}
+
+variable "uv_threadpool_size" {
+  description = "libuv thread pool size"
+  type        = number
+  default     = 8
 }
 
 variable "worker_queue_depth_target" {

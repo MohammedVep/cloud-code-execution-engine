@@ -124,6 +124,17 @@ resource "aws_ecs_cluster" "this" {
   tags = local.tags
 }
 
+resource "aws_ecs_cluster_capacity_providers" "this" {
+  cluster_name = aws_ecs_cluster.this.name
+
+  capacity_providers = ["FARGATE", "FARGATE_SPOT"]
+
+  default_capacity_provider_strategy {
+    capacity_provider = "FARGATE"
+    weight            = 1
+  }
+}
+
 resource "aws_cloudwatch_log_group" "api" {
   name              = "/ecs/${local.name_prefix}/api"
   retention_in_days = 14
@@ -513,6 +524,8 @@ resource "aws_ecs_task_definition" "api" {
       environment = [
         { name = "API_PORT", value = "8080" },
         { name = "AWS_REGION", value = var.aws_region },
+        { name = "NODE_OPTIONS", value = var.node_options },
+        { name = "UV_THREADPOOL_SIZE", value = tostring(var.uv_threadpool_size) },
         { name = "REDIS_URL", value = local.redis_url },
         { name = "AUTH_MODE", value = var.auth_mode },
         { name = "JWT_JWKS_URL", value = var.jwt_jwks_url },
@@ -601,6 +614,10 @@ resource "aws_ecs_task_definition" "worker" {
         { name = "WORKER_CONCURRENCY", value = tostring(var.worker_concurrency) },
         { name = "QUEUE_JOB_ATTEMPTS", value = tostring(var.queue_job_attempts) },
         { name = "QUEUE_RETRY_BACKOFF_MS", value = tostring(var.queue_retry_backoff_ms) },
+        { name = "QUEUE_RETRY_MAX_DELAY_MS", value = tostring(var.queue_retry_max_delay_ms) },
+        { name = "DLQ_QUEUE_NAME", value = var.dlq_queue_name },
+        { name = "NODE_OPTIONS", value = var.node_options },
+        { name = "UV_THREADPOOL_SIZE", value = tostring(var.uv_threadpool_size) },
         { name = "EXECUTION_BACKEND", value = "ecs" },
         { name = "AWS_REGION", value = var.aws_region },
         { name = "ECS_CLUSTER_ARN", value = aws_ecs_cluster.this.arn },
@@ -704,7 +721,11 @@ resource "aws_ecs_service" "worker" {
   cluster         = aws_ecs_cluster.this.id
   task_definition = aws_ecs_task_definition.worker.arn
   desired_count   = var.worker_desired_count
-  launch_type     = "FARGATE"
+  capacity_provider_strategy {
+    capacity_provider = "FARGATE_SPOT"
+    weight            = 1
+    base              = 0
+  }
 
   deployment_minimum_healthy_percent = 50
   deployment_maximum_percent         = 200
@@ -716,6 +737,7 @@ resource "aws_ecs_service" "worker" {
     assign_public_ip = var.worker_assign_public_ip
   }
 
+  depends_on = [aws_ecs_cluster_capacity_providers.this]
   tags = local.tags
 }
 

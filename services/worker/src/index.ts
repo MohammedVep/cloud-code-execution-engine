@@ -8,7 +8,7 @@ import { config } from "./config.js";
 import { getQueueDepth } from "./queue-metrics.js";
 import { dispatchEcsRunner } from "./runners/ecs-runner.js";
 import { executeLocalRunner } from "./runners/local-runner.js";
-import { markCompleted, markDispatched, markFailed, markRetrying, markRunning } from "./store.js";
+import { markCompleted, markDeadLettered, markDispatched, markFailed, markRetrying, markRunning } from "./store.js";
 
 const redisUrl = new URL(config.redisUrl);
 const redisConnection = {
@@ -25,6 +25,13 @@ const redis = new Redis(redisConnection);
 const ecsClient = new ECSClient({ region: config.awsRegion });
 const cloudWatchClient = new CloudWatchClient({ region: config.awsRegion });
 const queue = new Queue(config.queueName, { connection: redisConnection });
+const deadLetterQueue = new Queue(config.dlqQueueName, { connection: redisConnection });
+
+const jitteredBackoff = (attemptsMade: number, baseDelayMs: number, maxDelayMs: number): number => {
+  const exponential = baseDelayMs * 2 ** Math.max(0, attemptsMade - 1);
+  const jitter = Math.floor(Math.random() * baseDelayMs);
+  return Math.min(maxDelayMs, exponential + jitter);
+};
 
 const publishQueueDepthMetric = async (): Promise<void> => {
   if (config.executionBackend !== "ecs") {
@@ -109,7 +116,11 @@ const worker = new Worker(
   },
   {
     connection: redisConnection,
-    concurrency: config.concurrency
+    concurrency: config.concurrency,
+    settings: {
+      backoffStrategy: (attemptsMade: number) =>
+        jitteredBackoff(attemptsMade, config.queueRetryBackoffMs, config.queueRetryMaxDelayMs)
+    }
   }
 );
 
@@ -153,6 +164,31 @@ worker.on("failed", async (job, error) => {
     true,
     parsedPayload.data.traceId
   );
+  const dlqJobId = `${parsedPayload.data.jobId}-dlq-${Date.now()}`;
+  await deadLetterQueue.add(
+    dlqJobId,
+    {
+      ...parsedPayload.data,
+      dlq: {
+        jobId: parsedPayload.data.jobId,
+        error: error.message,
+        attemptsMade,
+        failedAt: new Date().toISOString()
+      }
+    },
+    {
+      jobId: dlqJobId
+    }
+  );
+  await markDeadLettered(
+    redis,
+    parsedPayload.data.jobId,
+    parsedPayload.data.tenant.tenantId,
+    dlqJobId,
+    error.message,
+    config.auditStreamKey,
+    parsedPayload.data.traceId
+  );
   console.error(`Job ${parsedPayload.data.jobId} failed`, error);
 });
 
@@ -160,6 +196,7 @@ const shutdown = async (): Promise<void> => {
   clearInterval(queueMetricTimer);
   await worker.close();
   await queue.close();
+  await deadLetterQueue.close();
   redis.disconnect();
 };
 
