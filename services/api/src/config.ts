@@ -38,6 +38,7 @@ const envSchema = z.object({
   QUEUE_DEPTH_TARGET: z.coerce.number().int().positive().max(10_000).default(25),
   QUEUE_DEPTH_METRIC_NAMESPACE: z.string().min(1).default("CCEE"),
   QUEUE_DEPTH_METRIC_NAME: z.string().min(1).default("PendingJobsCount"),
+  QUEUE_DEPTH_SCALE_METRIC_NAME: z.string().min(1).default("PendingJobsScaleSignal"),
   QUEUE_DEPTH_PUBLISH_INTERVAL_MS: z.coerce.number().int().min(5_000).max(300_000).default(30_000),
   QUEUE_DEPTH_METRIC_SERVICE_NAME: z.string().min(1).default("ccee-worker"),
   ECS_CLUSTER_ARN: z.preprocess(

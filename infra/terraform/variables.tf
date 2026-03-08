@@ -283,6 +283,12 @@ variable "queue_depth_metric_name" {
   default     = "PendingJobsCount"
 }
 
+variable "queue_depth_scale_metric_name" {
+  description = "CloudWatch metric name used for scale-from-zero autoscaling signal"
+  type        = string
+  default     = "PendingJobsScaleSignal"
+}
+
 variable "queue_depth_publish_interval_ms" {
   description = "Worker metric publish interval in milliseconds"
   type        = number

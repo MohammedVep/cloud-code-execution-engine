@@ -590,6 +590,7 @@ resource "aws_ecs_task_definition" "api" {
         { name = "QUEUE_DEPTH_TARGET", value = tostring(var.worker_queue_depth_target) },
         { name = "QUEUE_DEPTH_METRIC_NAMESPACE", value = var.queue_depth_metric_namespace },
         { name = "QUEUE_DEPTH_METRIC_NAME", value = var.queue_depth_metric_name },
+        { name = "QUEUE_DEPTH_SCALE_METRIC_NAME", value = var.queue_depth_scale_metric_name },
         { name = "QUEUE_DEPTH_PUBLISH_INTERVAL_MS", value = tostring(var.queue_depth_publish_interval_ms) },
         { name = "QUEUE_DEPTH_METRIC_SERVICE_NAME", value = local.worker_service_name },
         { name = "ECS_CLUSTER_ARN", value = aws_ecs_cluster.this.arn },
@@ -679,6 +680,8 @@ resource "aws_ecs_task_definition" "worker" {
         { name = "AUDIT_STREAM_KEY", value = var.audit_stream_key },
         { name = "QUEUE_DEPTH_METRIC_NAMESPACE", value = var.queue_depth_metric_namespace },
         { name = "QUEUE_DEPTH_METRIC_NAME", value = var.queue_depth_metric_name },
+        { name = "QUEUE_DEPTH_SCALE_METRIC_NAME", value = var.queue_depth_scale_metric_name },
+        { name = "QUEUE_DEPTH_TARGET", value = tostring(var.worker_queue_depth_target) },
         { name = "QUEUE_DEPTH_PUBLISH_INTERVAL_MS", value = tostring(var.queue_depth_publish_interval_ms) },
         { name = "QUEUE_DEPTH_METRIC_SERVICE_NAME", value = local.worker_service_name }
       ]
@@ -951,7 +954,7 @@ resource "aws_appautoscaling_policy" "worker_queue_depth" {
     scale_out_cooldown = 60
 
     customized_metric_specification {
-      metric_name = var.queue_depth_metric_name
+      metric_name = var.queue_depth_scale_metric_name
       namespace   = var.queue_depth_metric_namespace
       statistic   = "Average"
       unit        = "Count"

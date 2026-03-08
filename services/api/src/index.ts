@@ -189,6 +189,8 @@ const publishQueueDepthMetric = async (): Promise<void> => {
       (counts.paused ?? 0) +
       (counts.prioritized ?? 0) +
       (counts["waiting-children"] ?? 0);
+    const scaleSignal =
+      pending > 0 ? Math.max(pending, Math.max(1, config.QUEUE_DEPTH_TARGET) + 1) : 0;
 
     await cloudWatchClient.send(
       new PutMetricDataCommand({
@@ -202,6 +204,15 @@ const publishQueueDepthMetric = async (): Promise<void> => {
             ],
             Unit: "Count",
             Value: pending
+          },
+          {
+            MetricName: config.QUEUE_DEPTH_SCALE_METRIC_NAME,
+            Dimensions: [
+              { Name: "QueueName", Value: config.JOB_QUEUE_NAME },
+              { Name: "Service", Value: config.QUEUE_DEPTH_METRIC_SERVICE_NAME }
+            ],
+            Unit: "Count",
+            Value: scaleSignal
           }
         ]
       })

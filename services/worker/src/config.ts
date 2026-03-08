@@ -22,6 +22,8 @@ const baseSchema = z.object({
   ECS_RUNNER_CONTAINER_NAME: z.string().default("runner"),
   QUEUE_DEPTH_METRIC_NAMESPACE: z.string().min(1).default("CCEE"),
   QUEUE_DEPTH_METRIC_NAME: z.string().min(1).default("PendingJobsCount"),
+  QUEUE_DEPTH_SCALE_METRIC_NAME: z.string().min(1).default("PendingJobsScaleSignal"),
+  QUEUE_DEPTH_TARGET: z.coerce.number().int().positive().max(10_000).default(25),
   QUEUE_DEPTH_PUBLISH_INTERVAL_MS: z.coerce.number().int().min(5_000).max(300_000).default(30_000),
   QUEUE_DEPTH_METRIC_SERVICE_NAME: z.string().min(1).default("worker")
 });
@@ -76,6 +78,8 @@ export const config = {
   queueDepthMetric: {
     namespace: parsed.QUEUE_DEPTH_METRIC_NAMESPACE,
     metricName: parsed.QUEUE_DEPTH_METRIC_NAME,
+    scaleMetricName: parsed.QUEUE_DEPTH_SCALE_METRIC_NAME,
+    target: parsed.QUEUE_DEPTH_TARGET,
     publishIntervalMs: parsed.QUEUE_DEPTH_PUBLISH_INTERVAL_MS,
     serviceName: parsed.QUEUE_DEPTH_METRIC_SERVICE_NAME
   }

@@ -15,6 +15,24 @@ We run worker and runner tasks on AWS Fargate rather than EC2. Fargate uses AWS 
 - Cost model becomes per-task with scale-to-zero possible for workers.
 - We accept the Fargate platform limits (kernel features, storage constraints, and slower cold starts) as a tradeoff for isolation and simplicity.
 
+## FinOps Proof: Scale-to-Zero Verification
+To verify idle-cost control, we capture Application Auto Scaling activity records that show the worker service returning to zero desired tasks after backlog drain.
+
+CloudWatch scaling activity (captured on March 8, 2026):
+
+```json
+{
+  "ActivityId": "ef1e1707-93b5-4366-a6c3-41369f237019",
+  "ServiceNamespace": "ecs",
+  "ResourceId": "service/ccee-cluster/ccee-worker",
+  "ScalableDimension": "ecs:service:DesiredCount",
+  "Description": "Setting desired count to 0.",
+  "Cause": "monitor alarm TargetTracking-service/ccee-cluster/ccee-worker-AlarmLow-5c85abac-b629-4b92-9792-adf3287ce611 in state ALARM triggered policy ccee-worker-queue-depth",
+  "StartTime": "2026-03-08T13:31:06.701000-04:00",
+  "StatusCode": "Successful"
+}
+```
+
 ## Alternatives Considered
 - **EC2 + Docker**: lower cost, higher operational load, weaker isolation boundary.
 - **EC2 + gVisor/Kata**: stronger isolation but significant operational complexity and ongoing maintenance.
