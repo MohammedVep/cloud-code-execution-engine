@@ -32,8 +32,8 @@ const publishQueueDepthMetric = async (): Promise<void> => {
   }
 
   try {
-    const [waitingCount, activeCount] = await Promise.all([queue.getWaitingCount(), queue.getActiveCount()]);
-    const queueDepth = getQueueDepth(waitingCount, activeCount);
+    const waitingCount = await queue.getWaitingCount();
+    const queueDepth = getQueueDepth(waitingCount);
 
     await cloudWatchClient.send(
       new PutMetricDataCommand({

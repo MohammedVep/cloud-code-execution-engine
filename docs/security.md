@@ -16,6 +16,7 @@ Users submit untrusted source code and input. The platform must prevent sandbox 
 
 ### Sandbox controls
 - Isolated execution runtime per job.
+- Fargate tasks run on Firecracker microVMs, providing a hardware-virtualization isolation boundary.
 - CPU, memory, wall-clock timeout, process count, and file-size limits.
 - Non-root execution with dropped capabilities and `no-new-privileges`.
 - Local mode network disabled in sandbox (`--network none`).

@@ -10,6 +10,7 @@ Secure, multi-tenant, asynchronous code execution platform with recruiter-facing
 - Security model: [`docs/security.md`](docs/security.md)
 - Scaling model: [`docs/scaling.md`](docs/scaling.md)
 - System design: [`docs/system-design.md`](docs/system-design.md)
+- ADR: [`docs/adr/0001-why-fargate-over-ec2.md`](docs/adr/0001-why-fargate-over-ec2.md)
 - Demo script: [`demo/DEMO_SCRIPT.md`](demo/DEMO_SCRIPT.md)
 
 ## What is implemented
@@ -29,7 +30,7 @@ Secure, multi-tenant, asynchronous code execution platform with recruiter-facing
 - `services/worker`
   - BullMQ queue consumer
   - Async dispatch to local Docker runner or ECS/Fargate runner tasks
-  - Queue-depth CloudWatch metric publishing (`CCEE/QueueDepth`)
+  - Queue-depth CloudWatch metric publishing (`CCEE/PendingJobsCount`)
   - Retry + exponential backoff for transient failures
 - `services/runner`
   - Sandboxed execution runtime for `javascript`, `python`, `java`
@@ -107,10 +108,10 @@ sequenceDiagram
 
 ### How scaling works
 
-- Workers publish queue depth (`waiting + active`) to CloudWatch metric namespace `CCEE` (metric `QueueDepth` by default).
-- Terraform provisions ECS Application Auto Scaling with CloudWatch alarms:
-  - high queue depth alarm triggers step scale-out
-  - low queue depth alarm triggers step scale-in
+- Workers publish queue depth (`waiting`) to CloudWatch metric namespace `CCEE` (metric `PendingJobsCount` by default).
+- Terraform provisions ECS Application Auto Scaling with target tracking:
+  - scale out when queue depth exceeds the target
+  - scale in toward zero as the queue drains
 - Worker ECS service runs in private subnets with `assign_public_ip = false`; runner tasks remain ephemeral per execution.
 
 ### How abuse is prevented
@@ -154,7 +155,7 @@ Relevant env vars:
 Worker metric config:
 
 - `QUEUE_DEPTH_METRIC_NAMESPACE` (default `CCEE`)
-- `QUEUE_DEPTH_METRIC_NAME` (default `QueueDepth`)
+- `QUEUE_DEPTH_METRIC_NAME` (default `PendingJobsCount`)
 - `QUEUE_DEPTH_PUBLISH_INTERVAL_MS` (default `30000`)
 - `QUEUE_DEPTH_METRIC_SERVICE_NAME` (default `worker`)
 
@@ -250,19 +251,23 @@ The Terraform module provisions:
 
 - ALB + API ECS service
 - Worker ECS service with `EXECUTION_BACKEND=ecs`
-- ECS Application Auto Scaling target/policies + queue-depth CloudWatch alarms for worker service
+- ECS Application Auto Scaling target tracking on queue depth for worker service
 - Runner task definition
 - ElastiCache Redis (TLS)
 - IAM + SG boundaries for worker/runner/API/Redis
+- Optional VPC, subnets, NAT, and RDS PostgreSQL
 
 Key required vars:
 
-- `vpc_id`
-- `public_subnet_ids`
-- `private_subnet_ids`
 - `api_image`
 - `worker_image`
 - `runner_image`
+
+Network vars:
+
+- `create_vpc` (default `false`)
+- `vpc_id`, `public_subnet_ids`, `private_subnet_ids` (required when `create_vpc=false`)
+- `vpc_cidr`, `public_subnet_cidrs`, `private_subnet_cidrs`, `availability_zones` (used when `create_vpc=true`)
 
 AI-specific vars (optional):
 
@@ -283,9 +288,14 @@ Auth/rate-limit vars (optional):
 - `max_source_code_bytes`
 - `max_stdin_bytes`
 - `worker_min_capacity`, `worker_max_capacity`
-- `worker_scale_out_queue_depth`, `worker_scale_in_queue_depth`
-- `queue_depth_alarm_period_seconds`, `queue_depth_eval_periods`
+- `worker_queue_depth_target`
 - `queue_depth_metric_namespace`, `queue_depth_metric_name`, `queue_depth_publish_interval_ms`
+
+RDS vars (optional):
+
+- `enable_rds` (default `false`)
+- `rds_db_name`, `rds_username`, `rds_password`
+- `rds_instance_class`, `rds_allocated_storage_gb`, `rds_multi_az`
 
 Example:
 
@@ -293,9 +303,17 @@ Example:
 cd infra/terraform
 terraform init
 terraform apply \
-  -var 'vpc_id=vpc-xxxx' \
-  -var 'public_subnet_ids=["subnet-public-a","subnet-public-b"]' \
-  -var 'private_subnet_ids=["subnet-private-a","subnet-private-b"]' \
+  -var 'api_image=<account>.dkr.ecr.<region>.amazonaws.com/ccee-api:latest' \
+  -var 'worker_image=<account>.dkr.ecr.<region>.amazonaws.com/ccee-worker:latest' \
+  -var 'runner_image=<account>.dkr.ecr.<region>.amazonaws.com/ccee-runner:latest'
+```
+
+To create a fresh VPC + subnets:
+
+```bash
+terraform apply \
+  -var 'create_vpc=true' \
+  -var 'availability_zones=["us-east-1a","us-east-1b"]' \
   -var 'api_image=<account>.dkr.ecr.<region>.amazonaws.com/ccee-api:latest' \
   -var 'worker_image=<account>.dkr.ecr.<region>.amazonaws.com/ccee-worker:latest' \
   -var 'runner_image=<account>.dkr.ecr.<region>.amazonaws.com/ccee-runner:latest'

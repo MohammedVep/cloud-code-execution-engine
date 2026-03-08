@@ -11,18 +11,51 @@ variable "project_name" {
 }
 
 variable "vpc_id" {
-  description = "VPC ID where ECS tasks run"
+  description = "VPC ID where ECS tasks run (ignored when create_vpc=true)"
   type        = string
+  default     = ""
 }
 
 variable "public_subnet_ids" {
-  description = "Subnets for internet-facing ALB and API tasks"
+  description = "Subnets for internet-facing ALB and API tasks (ignored when create_vpc=true)"
   type        = list(string)
+  default     = []
 }
 
 variable "private_subnet_ids" {
-  description = "Subnets for worker, runner, and ElastiCache"
+  description = "Subnets for worker, runner, and ElastiCache (ignored when create_vpc=true)"
   type        = list(string)
+  default     = []
+}
+
+variable "create_vpc" {
+  description = "Whether to provision a dedicated VPC and subnet layout"
+  type        = bool
+  default     = false
+}
+
+variable "vpc_cidr" {
+  description = "CIDR block for the VPC when create_vpc=true"
+  type        = string
+  default     = "10.24.0.0/16"
+}
+
+variable "availability_zones" {
+  description = "Availability zones to use when create_vpc=true"
+  type        = list(string)
+  default     = []
+}
+
+variable "public_subnet_cidrs" {
+  description = "Public subnet CIDRs when create_vpc=true"
+  type        = list(string)
+  default     = ["10.24.10.0/24", "10.24.11.0/24"]
+}
+
+variable "private_subnet_cidrs" {
+  description = "Private subnet CIDRs when create_vpc=true"
+  type        = list(string)
+  default     = ["10.24.20.0/24", "10.24.21.0/24"]
 }
 
 variable "api_image" {
@@ -97,7 +130,7 @@ variable "worker_assign_public_ip" {
 variable "worker_min_capacity" {
   description = "Minimum autoscaled worker task count"
   type        = number
-  default     = 1
+  default     = 0
 }
 
 variable "worker_max_capacity" {
@@ -241,7 +274,7 @@ variable "queue_depth_metric_namespace" {
 variable "queue_depth_metric_name" {
   description = "CloudWatch metric name used for queue depth scaling"
   type        = string
-  default     = "QueueDepth"
+  default     = "PendingJobsCount"
 }
 
 variable "queue_depth_publish_interval_ms" {
@@ -250,28 +283,10 @@ variable "queue_depth_publish_interval_ms" {
   default     = 30000
 }
 
-variable "worker_scale_out_queue_depth" {
-  description = "Queue depth threshold that triggers worker scale-out"
+variable "worker_queue_depth_target" {
+  description = "Target queue depth per worker for target tracking autoscaling"
   type        = number
-  default     = 10
-}
-
-variable "worker_scale_in_queue_depth" {
-  description = "Queue depth threshold that triggers worker scale-in"
-  type        = number
-  default     = 0
-}
-
-variable "queue_depth_alarm_period_seconds" {
-  description = "CloudWatch alarm period in seconds for queue depth autoscaling"
-  type        = number
-  default     = 60
-}
-
-variable "queue_depth_eval_periods" {
-  description = "CloudWatch alarm evaluation periods for queue depth autoscaling"
-  type        = number
-  default     = 2
+  default     = 25
 }
 
 variable "analysis_max_source_chars" {
@@ -315,6 +330,49 @@ variable "openai_api_key" {
   type        = string
   default     = ""
   sensitive   = true
+}
+
+variable "enable_rds" {
+  description = "Whether to provision an RDS PostgreSQL database"
+  type        = bool
+  default     = false
+}
+
+variable "rds_db_name" {
+  description = "RDS database name"
+  type        = string
+  default     = "ccee"
+}
+
+variable "rds_username" {
+  description = "RDS master username"
+  type        = string
+  default     = "ccee_admin"
+}
+
+variable "rds_password" {
+  description = "RDS master password"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "rds_instance_class" {
+  description = "RDS instance class"
+  type        = string
+  default     = "db.t4g.small"
+}
+
+variable "rds_allocated_storage_gb" {
+  description = "RDS allocated storage in GB"
+  type        = number
+  default     = 20
+}
+
+variable "rds_multi_az" {
+  description = "Enable RDS Multi-AZ"
+  type        = bool
+  default     = false
 }
 
 variable "audit_stream_key" {

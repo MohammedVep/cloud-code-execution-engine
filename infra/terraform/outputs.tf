@@ -13,6 +13,21 @@ output "ecs_cluster_arn" {
   description = "ECS cluster ARN"
 }
 
+output "vpc_id" {
+  value       = local.vpc_id
+  description = "VPC ID in use"
+}
+
+output "public_subnet_ids" {
+  value       = local.public_subnet_ids
+  description = "Public subnet IDs in use"
+}
+
+output "private_subnet_ids" {
+  value       = local.private_subnet_ids
+  description = "Private subnet IDs in use"
+}
+
 output "api_task_definition_arn" {
   value       = aws_ecs_task_definition.api.arn
   description = "API ECS task definition ARN"
@@ -47,4 +62,19 @@ output "redis_url" {
   value       = local.redis_url
   description = "Redis connection URL for services"
   sensitive   = true
+}
+
+output "rds_endpoint" {
+  value       = var.enable_rds ? aws_db_instance.postgres[0].address : null
+  description = "RDS PostgreSQL endpoint address"
+}
+
+output "rds_port" {
+  value       = var.enable_rds ? aws_db_instance.postgres[0].port : null
+  description = "RDS PostgreSQL port"
+}
+
+output "rds_db_name" {
+  value       = var.enable_rds ? aws_db_instance.postgres[0].db_name : null
+  description = "RDS PostgreSQL database name"
 }

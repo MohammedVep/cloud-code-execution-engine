@@ -19,7 +19,7 @@ const baseSchema = z.object({
   ECS_ASSIGN_PUBLIC_IP: z.enum(["ENABLED", "DISABLED"]).default("DISABLED"),
   ECS_RUNNER_CONTAINER_NAME: z.string().default("runner"),
   QUEUE_DEPTH_METRIC_NAMESPACE: z.string().min(1).default("CCEE"),
-  QUEUE_DEPTH_METRIC_NAME: z.string().min(1).default("QueueDepth"),
+  QUEUE_DEPTH_METRIC_NAME: z.string().min(1).default("PendingJobsCount"),
   QUEUE_DEPTH_PUBLISH_INTERVAL_MS: z.coerce.number().int().min(5_000).max(300_000).default(30_000),
   QUEUE_DEPTH_METRIC_SERVICE_NAME: z.string().min(1).default("worker")
 });

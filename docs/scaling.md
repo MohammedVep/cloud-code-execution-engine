@@ -4,14 +4,14 @@
 - Asynchronous queue (`BullMQ`) between API and workers.
 - Worker concurrency controlled by `WORKER_CONCURRENCY`.
 - ECS deployment supports horizontal worker replicas.
-- Queue depth metrics published to CloudWatch (`CCEE/QueueDepth`).
-- ECS Application Auto Scaling:
-  - scale out on sustained queue depth
-  - scale in when queue drains
+- Queue depth metrics published to CloudWatch (`CCEE/PendingJobsCount`).
+- ECS Application Auto Scaling with target tracking:
+  - scale out when queue depth exceeds target
+  - scale in toward zero when queue drains
 
 ## Key Metrics
 - Jobs submitted per minute
-- Queue depth (`waiting + active`)
+- Queue depth (`waiting`)
 - Queue wait time (submit-to-run latency)
 - Execution duration
 - Timeout rate
@@ -25,7 +25,7 @@
 - Timeout: runner is hard-killed and result marked failed with `timedOut=true`.
 
 ## How to Scale to Higher Volume (10k+/day)
-1. Increase worker max capacity and tune scale thresholds.
+1. Increase worker max capacity and tune target queue depth.
 2. Add queue partitioning by tenant tier (gold/silver/bronze).
 3. Introduce fairness scheduling to prevent tenant starvation.
 4. Add DLQ for permanently failing jobs.

@@ -41,6 +41,7 @@
 
 ## Future Plan
 - Move long-term history/logs to Postgres + object storage.
+- Provision RDS PostgreSQL for durable execution history and audit retention.
 - Add WebSocket status stream for near-real-time updates.
 - Introduce DLQ and replay tooling.
 - Add tenant-aware fair scheduling and priority classes.

@@ -1,6 +1,16 @@
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
 locals {
-  name_prefix = var.project_name
+  name_prefix         = var.project_name
   worker_service_name = "${var.project_name}-worker"
+  selected_azs        = length(var.availability_zones) > 0 ? var.availability_zones : data.aws_availability_zones.available.names
+
+  vpc_id             = var.create_vpc ? aws_vpc.main[0].id : var.vpc_id
+  public_subnet_ids  = var.create_vpc ? aws_subnet.public[*].id : var.public_subnet_ids
+  private_subnet_ids = var.create_vpc ? aws_subnet.private[*].id : var.private_subnet_ids
+
   tags = merge(
     {
       Project   = var.project_name
@@ -10,6 +20,97 @@ locals {
   )
 
   redis_url = var.redis_auth_token == null ? "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379" : "rediss://:${urlencode(var.redis_auth_token)}@${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379"
+}
+
+resource "aws_vpc" "main" {
+  count                = var.create_vpc ? 1 : 0
+  cidr_block           = var.vpc_cidr
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+
+  tags = local.tags
+}
+
+resource "aws_internet_gateway" "main" {
+  count  = var.create_vpc ? 1 : 0
+  vpc_id = aws_vpc.main[0].id
+
+  tags = local.tags
+}
+
+resource "aws_subnet" "public" {
+  count                   = var.create_vpc ? length(var.public_subnet_cidrs) : 0
+  vpc_id                  = aws_vpc.main[0].id
+  cidr_block              = var.public_subnet_cidrs[count.index]
+  availability_zone       = local.selected_azs[count.index % length(local.selected_azs)]
+  map_public_ip_on_launch = true
+
+  tags = merge(local.tags, { Tier = "public" })
+}
+
+resource "aws_subnet" "private" {
+  count                   = var.create_vpc ? length(var.private_subnet_cidrs) : 0
+  vpc_id                  = aws_vpc.main[0].id
+  cidr_block              = var.private_subnet_cidrs[count.index]
+  availability_zone       = local.selected_azs[count.index % length(local.selected_azs)]
+  map_public_ip_on_launch = false
+
+  tags = merge(local.tags, { Tier = "private" })
+}
+
+resource "aws_route_table" "public" {
+  count  = var.create_vpc ? 1 : 0
+  vpc_id = aws_vpc.main[0].id
+
+  tags = local.tags
+}
+
+resource "aws_route" "public_internet" {
+  count                  = var.create_vpc ? 1 : 0
+  route_table_id         = aws_route_table.public[0].id
+  destination_cidr_block = "0.0.0.0/0"
+  gateway_id             = aws_internet_gateway.main[0].id
+}
+
+resource "aws_route_table_association" "public" {
+  count          = var.create_vpc ? length(aws_subnet.public) : 0
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public[0].id
+}
+
+resource "aws_eip" "nat" {
+  count  = var.create_vpc ? 1 : 0
+  domain = "vpc"
+
+  tags = local.tags
+}
+
+resource "aws_nat_gateway" "main" {
+  count         = var.create_vpc ? 1 : 0
+  allocation_id = aws_eip.nat[0].id
+  subnet_id     = aws_subnet.public[0].id
+
+  tags = local.tags
+}
+
+resource "aws_route_table" "private" {
+  count  = var.create_vpc ? 1 : 0
+  vpc_id = aws_vpc.main[0].id
+
+  tags = local.tags
+}
+
+resource "aws_route" "private_nat" {
+  count                  = var.create_vpc ? 1 : 0
+  route_table_id         = aws_route_table.private[0].id
+  destination_cidr_block = "0.0.0.0/0"
+  nat_gateway_id         = aws_nat_gateway.main[0].id
+}
+
+resource "aws_route_table_association" "private" {
+  count          = var.create_vpc ? length(aws_subnet.private) : 0
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private[0].id
 }
 
 resource "aws_ecs_cluster" "this" {
@@ -43,13 +144,13 @@ resource "aws_cloudwatch_log_group" "runner" {
 
 resource "aws_elasticache_subnet_group" "redis" {
   name       = "${local.name_prefix}-redis-subnets"
-  subnet_ids = var.private_subnet_ids
+  subnet_ids = local.private_subnet_ids
 }
 
 resource "aws_security_group" "api_alb" {
   name        = "${local.name_prefix}-api-alb-sg"
   description = "Public ALB security group"
-  vpc_id      = var.vpc_id
+  vpc_id      = local.vpc_id
 
   tags = local.tags
 }
@@ -66,7 +167,7 @@ resource "aws_security_group_rule" "api_alb_ingress_http" {
 resource "aws_security_group" "api" {
   name        = "${local.name_prefix}-api-sg"
   description = "API tasks"
-  vpc_id      = var.vpc_id
+  vpc_id      = local.vpc_id
 
   tags = local.tags
 }
@@ -83,7 +184,7 @@ resource "aws_security_group_rule" "api_ingress_from_alb" {
 resource "aws_security_group" "worker" {
   name        = "${local.name_prefix}-worker-sg"
   description = "Worker tasks"
-  vpc_id      = var.vpc_id
+  vpc_id      = local.vpc_id
 
   tags = local.tags
 }
@@ -91,7 +192,7 @@ resource "aws_security_group" "worker" {
 resource "aws_security_group" "runner" {
   name        = "${local.name_prefix}-runner-sg"
   description = "Runner tasks"
-  vpc_id      = var.vpc_id
+  vpc_id      = local.vpc_id
 
   tags = local.tags
 }
@@ -99,7 +200,7 @@ resource "aws_security_group" "runner" {
 resource "aws_security_group" "redis" {
   name        = "${local.name_prefix}-redis-sg"
   description = "Redis ingress from app services only"
-  vpc_id      = var.vpc_id
+  vpc_id      = local.vpc_id
 
   tags = local.tags
 }
@@ -238,6 +339,28 @@ resource "aws_iam_role" "worker_task" {
   tags               = local.tags
 }
 
+resource "aws_iam_role_policy" "worker_metrics" {
+  name = "${local.name_prefix}-worker-metrics"
+  role = aws_iam_role.worker_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Sid      = "AllowPutQueueDepthMetric",
+        Effect   = "Allow",
+        Action   = ["cloudwatch:PutMetricData"],
+        Resource = "*",
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = var.queue_depth_metric_namespace
+          }
+        }
+      }
+    ]
+  })
+}
+
 resource "aws_iam_role" "runner_task" {
   name               = "${local.name_prefix}-runner-task-role"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume_role.json
@@ -283,7 +406,7 @@ resource "aws_lb" "api" {
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.api_alb.id]
-  subnets            = var.public_subnet_ids
+  subnets            = local.public_subnet_ids
 
   tags = local.tags
 }
@@ -293,7 +416,7 @@ resource "aws_lb_target_group" "api" {
   port        = 8080
   protocol    = "HTTP"
   target_type = "ip"
-  vpc_id      = var.vpc_id
+  vpc_id      = local.vpc_id
 
   health_check {
     enabled             = true
@@ -454,7 +577,7 @@ resource "aws_ecs_task_definition" "worker" {
         { name = "AWS_REGION", value = var.aws_region },
         { name = "ECS_CLUSTER_ARN", value = aws_ecs_cluster.this.arn },
         { name = "ECS_TASK_DEFINITION_ARN", value = aws_ecs_task_definition.runner.arn },
-        { name = "ECS_SUBNET_IDS", value = join(",", var.private_subnet_ids) },
+        { name = "ECS_SUBNET_IDS", value = join(",", local.private_subnet_ids) },
         { name = "ECS_SECURITY_GROUP_IDS", value = aws_security_group.runner.id },
         { name = "ECS_ASSIGN_PUBLIC_IP", value = var.worker_assign_public_ip ? "ENABLED" : "DISABLED" },
         { name = "ECS_RUNNER_CONTAINER_NAME", value = "runner" },
@@ -539,7 +662,7 @@ resource "aws_ecs_service" "api" {
   }
 
   network_configuration {
-    subnets          = var.public_subnet_ids
+    subnets          = local.public_subnet_ids
     security_groups  = [aws_security_group.api.id]
     assign_public_ip = true
   }
@@ -560,7 +683,7 @@ resource "aws_ecs_service" "worker" {
   enable_execute_command             = true
 
   network_configuration {
-    subnets          = var.private_subnet_ids
+    subnets          = local.private_subnet_ids
     security_groups  = [aws_security_group.worker.id]
     assign_public_ip = var.worker_assign_public_ip
   }
@@ -576,78 +699,33 @@ resource "aws_appautoscaling_target" "worker" {
   service_namespace  = "ecs"
 }
 
-resource "aws_appautoscaling_policy" "worker_scale_out" {
-  name               = "${local.name_prefix}-worker-scale-out"
-  policy_type        = "StepScaling"
+resource "aws_appautoscaling_policy" "worker_queue_depth" {
+  name               = "${local.name_prefix}-worker-queue-depth"
+  policy_type        = "TargetTrackingScaling"
   resource_id        = aws_appautoscaling_target.worker.resource_id
   scalable_dimension = aws_appautoscaling_target.worker.scalable_dimension
   service_namespace  = aws_appautoscaling_target.worker.service_namespace
 
-  step_scaling_policy_configuration {
-    adjustment_type         = "ChangeInCapacity"
-    cooldown                = 60
-    metric_aggregation_type = "Average"
+  target_tracking_scaling_policy_configuration {
+    target_value       = var.worker_queue_depth_target
+    scale_in_cooldown  = 120
+    scale_out_cooldown = 60
 
-    step_adjustment {
-      metric_interval_lower_bound = 0
-      scaling_adjustment          = 1
+    customized_metric_specification {
+      metric_name = var.queue_depth_metric_name
+      namespace   = var.queue_depth_metric_namespace
+      statistic   = "Average"
+      unit        = "Count"
+
+      dimensions {
+        name  = "QueueName"
+        value = var.job_queue_name
+      }
+
+      dimensions {
+        name  = "Service"
+        value = local.worker_service_name
+      }
     }
-  }
-}
-
-resource "aws_appautoscaling_policy" "worker_scale_in" {
-  name               = "${local.name_prefix}-worker-scale-in"
-  policy_type        = "StepScaling"
-  resource_id        = aws_appautoscaling_target.worker.resource_id
-  scalable_dimension = aws_appautoscaling_target.worker.scalable_dimension
-  service_namespace  = aws_appautoscaling_target.worker.service_namespace
-
-  step_scaling_policy_configuration {
-    adjustment_type         = "ChangeInCapacity"
-    cooldown                = 120
-    metric_aggregation_type = "Average"
-
-    step_adjustment {
-      metric_interval_upper_bound = 0
-      scaling_adjustment          = -1
-    }
-  }
-}
-
-resource "aws_cloudwatch_metric_alarm" "worker_queue_depth_high" {
-  alarm_name          = "${local.name_prefix}-worker-queue-depth-high"
-  alarm_description   = "Scale out worker service when queue depth is sustained"
-  comparison_operator = "GreaterThanOrEqualToThreshold"
-  evaluation_periods  = var.queue_depth_eval_periods
-  metric_name         = var.queue_depth_metric_name
-  namespace           = var.queue_depth_metric_namespace
-  period              = var.queue_depth_alarm_period_seconds
-  statistic           = "Average"
-  threshold           = var.worker_scale_out_queue_depth
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_appautoscaling_policy.worker_scale_out.arn]
-
-  dimensions = {
-    QueueName = var.job_queue_name
-    Service   = local.worker_service_name
-  }
-}
-
-resource "aws_cloudwatch_metric_alarm" "worker_queue_depth_low" {
-  alarm_name          = "${local.name_prefix}-worker-queue-depth-low"
-  alarm_description   = "Scale in worker service when queue depth drains"
-  comparison_operator = "LessThanOrEqualToThreshold"
-  evaluation_periods  = var.queue_depth_eval_periods
-  metric_name         = var.queue_depth_metric_name
-  namespace           = var.queue_depth_metric_namespace
-  period              = var.queue_depth_alarm_period_seconds
-  statistic           = "Average"
-  threshold           = var.worker_scale_in_queue_depth
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_appautoscaling_policy.worker_scale_in.arn]
-
-  dimensions = {
-    QueueName = var.job_queue_name
-    Service   = local.worker_service_name
   }
 }
