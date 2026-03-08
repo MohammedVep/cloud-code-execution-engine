@@ -338,6 +338,24 @@ variable "enable_rds" {
   default     = false
 }
 
+variable "enable_vpc_endpoints" {
+  description = "Whether to provision VPC endpoints for private service access"
+  type        = bool
+  default     = false
+}
+
+variable "vpc_endpoint_subnet_ids" {
+  description = "Subnet IDs for interface VPC endpoints (defaults to private subnets)"
+  type        = list(string)
+  default     = []
+}
+
+variable "vpc_endpoint_route_table_ids" {
+  description = "Route table IDs for S3 gateway endpoint (optional)"
+  type        = list(string)
+  default     = []
+}
+
 variable "rds_db_name" {
   description = "RDS database name"
   type        = string
