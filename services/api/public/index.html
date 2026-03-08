@@ -514,12 +514,140 @@
           grid-template-columns: 1fr;
         }
       }
+
+      .hidden {
+        display: none !important;
+      }
+
+      body.admin-mode {
+        background: radial-gradient(circle at 20% 10%, rgba(15, 139, 141, 0.18), transparent 35%),
+          radial-gradient(circle at 80% 0%, rgba(18, 25, 32, 0.6), transparent 45%),
+          linear-gradient(160deg, #0c1419 0%, #0a1116 55%, #0f1a20 100%);
+        color: #eef6f8;
+      }
+
+      body.admin-mode .noise {
+        opacity: 0.12;
+        mix-blend-mode: screen;
+      }
+
+      .admin-dashboard {
+        margin-top: 2rem;
+        padding: 2rem;
+        border-radius: 1.2rem;
+        background: rgba(14, 20, 26, 0.92);
+        border: 1px solid rgba(130, 160, 170, 0.18);
+        box-shadow: 0 28px 70px -40px rgba(0, 0, 0, 0.9);
+        display: grid;
+        gap: 1.6rem;
+      }
+
+      .admin-header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1.2rem;
+      }
+
+      .admin-header h2 {
+        margin: 0.2rem 0 0.4rem;
+        font-size: 2rem;
+      }
+
+      .admin-muted {
+        color: rgba(220, 236, 240, 0.7);
+        font-size: 0.9rem;
+      }
+
+      .admin-controls {
+        display: grid;
+        gap: 0.65rem;
+        min-width: 260px;
+      }
+
+      .admin-controls label {
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: rgba(180, 205, 214, 0.8);
+      }
+
+      .admin-controls input {
+        margin-top: 0.35rem;
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid rgba(134, 162, 172, 0.3);
+        padding: 0.6rem 0.75rem;
+        background: rgba(10, 16, 22, 0.9);
+        color: #e8f2f4;
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 0.85rem;
+      }
+
+      .admin-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 1rem;
+      }
+
+      .admin-card {
+        padding: 1.1rem 1.2rem;
+        border-radius: 1rem;
+        background: rgba(16, 23, 30, 0.92);
+        border: 1px solid rgba(115, 142, 152, 0.25);
+      }
+
+      .admin-card h4 {
+        margin: 0 0 0.35rem;
+        font-size: 0.92rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: rgba(178, 210, 218, 0.75);
+      }
+
+      .admin-metric {
+        font-size: 1.8rem;
+        font-weight: 700;
+      }
+
+      .admin-sub {
+        margin-top: 0.35rem;
+        font-size: 0.85rem;
+        color: rgba(195, 218, 225, 0.7);
+      }
+
+      .admin-actions {
+        display: grid;
+        gap: 1rem;
+      }
+
+      .admin-actions .btn {
+        width: 100%;
+      }
+
+      .admin-actions .btn.secondary {
+        background: rgba(28, 35, 42, 0.9);
+        color: #f0f6f8;
+      }
+
+      .admin-log {
+        min-height: 120px;
+        background: rgba(8, 12, 16, 0.9);
+        border-radius: 0.9rem;
+        border: 1px solid rgba(120, 148, 158, 0.2);
+        padding: 0.9rem;
+        color: #b9d2da;
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 0.78rem;
+        overflow-x: auto;
+      }
     </style>
   </head>
   <body>
     <div class="noise"></div>
     <main class="shell">
-      <header class="topbar reveal">
+      <header class="topbar reveal" data-public="true">
         <div class="brand">
           <span class="brand-dot"></span>
           <span>Cloud Code Execution Engine</span>
@@ -537,7 +665,54 @@
         </div>
       </header>
 
-      <section class="hero">
+      <section id="admin-dashboard" class="admin-dashboard hidden" data-admin="true">
+        <div class="admin-header">
+          <div>
+            <span class="kicker mono">Internal SRE Dashboard</span>
+            <h2>Observability Control Plane</h2>
+            <p class="admin-muted">Live queue depth, DLQ size, and ECS worker capacity. Polling every 3s.</p>
+          </div>
+          <div class="admin-controls">
+            <label>
+              API Base URL
+              <input id="admin-api-base" type="text" placeholder="https://your-api.example.com" />
+            </label>
+            <label>
+              Admin API Key
+              <input id="admin-api-key" type="password" placeholder="x-api-key" />
+            </label>
+            <button id="admin-refresh" class="btn secondary" type="button">Refresh Now</button>
+          </div>
+        </div>
+
+        <div class="admin-grid">
+          <div class="admin-card">
+            <h4>Queue Depth</h4>
+            <div class="admin-metric" id="admin-queue-depth">--</div>
+            <div class="admin-sub">Target per worker: <span id="admin-queue-target">--</span></div>
+          </div>
+          <div class="admin-card">
+            <h4>Active Workers</h4>
+            <div class="admin-metric" id="admin-worker-running">--</div>
+            <div class="admin-sub">
+              Desired: <span id="admin-worker-desired">--</span> • Pending: <span id="admin-worker-pending">--</span>
+            </div>
+          </div>
+          <div class="admin-card">
+            <h4>DLQ Pending</h4>
+            <div class="admin-metric" id="admin-dlq-depth">--</div>
+            <div class="admin-sub">Last update: <span id="admin-last-update">--</span></div>
+          </div>
+        </div>
+
+        <div class="admin-actions">
+          <button id="admin-burst" class="btn" type="button">Simulate 1,000 Payload Burst</button>
+          <button id="admin-replay" class="btn secondary" type="button">Execute Runbook: Replay DLQ</button>
+          <pre id="admin-log" class="admin-log">Admin runbook output will appear here.</pre>
+        </div>
+      </section>
+
+      <section class="hero" data-public="true">
         <article class="hero-main panel reveal delay-1">
           <span class="kicker mono">Mini PaaS • Secure Runner • Async Queue</span>
           <h1>Run untrusted code safely, at scale, with auditable control.</h1>
@@ -576,7 +751,7 @@
         </aside>
       </section>
 
-      <section class="section section-grid">
+      <section class="section section-grid" data-public="true">
         <article class="panel demo-panel reveal delay-2">
           <h2 class="section-title">Architecture Components</h2>
           <div class="cards">
@@ -634,7 +809,7 @@
         </article>
       </section>
 
-      <section class="demo">
+      <section class="demo" data-public="true">
         <article class="panel demo-panel reveal delay-2">
           <h2 class="section-title">Live Sandbox Demo</h2>
           <p class="muted">Submit a job to the real backend from this page. Use your tenant API key.</p>
@@ -746,6 +921,20 @@
       const loadHistoryBtn = document.getElementById("load-history");
       const loadAuditBtn = document.getElementById("load-audit");
       const analyzeBtn = document.getElementById("analyze-job");
+      const adminDashboard = document.getElementById("admin-dashboard");
+      const adminApiKeyInput = document.getElementById("admin-api-key");
+      const adminApiBaseInput = document.getElementById("admin-api-base");
+      const adminRefreshBtn = document.getElementById("admin-refresh");
+      const adminBurstBtn = document.getElementById("admin-burst");
+      const adminReplayBtn = document.getElementById("admin-replay");
+      const adminQueueDepth = document.getElementById("admin-queue-depth");
+      const adminQueueTarget = document.getElementById("admin-queue-target");
+      const adminWorkerRunning = document.getElementById("admin-worker-running");
+      const adminWorkerDesired = document.getElementById("admin-worker-desired");
+      const adminWorkerPending = document.getElementById("admin-worker-pending");
+      const adminDlqDepth = document.getElementById("admin-dlq-depth");
+      const adminLastUpdate = document.getElementById("admin-last-update");
+      const adminLog = document.getElementById("admin-log");
 
       let pollHandle = null;
       let latestJobId = null;
@@ -755,6 +944,20 @@
       const storedKey = localStorage.getItem("ccee_api_key");
       if (storedKey) {
         apiKeyInput.value = storedKey;
+      }
+
+      if (adminApiKeyInput) {
+        const storedAdminKey = localStorage.getItem("ccee_admin_key");
+        if (storedAdminKey) {
+          adminApiKeyInput.value = storedAdminKey;
+        }
+      }
+
+      if (adminApiBaseInput) {
+        const storedApiBase = localStorage.getItem("ccee_api_base");
+        if (storedApiBase) {
+          adminApiBaseInput.value = storedApiBase;
+        }
       }
 
       const templates = {
@@ -832,8 +1035,20 @@
 
       const format = (data) => JSON.stringify(data, null, 2);
 
+      const getApiBase = () => {
+        if (!adminApiBaseInput) {
+          return "";
+        }
+        const raw = adminApiBaseInput.value.trim();
+        if (!raw) {
+          return "";
+        }
+        return raw.replace(/\/+$/, "");
+      };
+
       const fetchJson = async (url, options = {}) => {
-        const res = await fetch(url, options);
+        const base = getApiBase();
+        const res = await fetch(`${base}${url}`, options);
         let payload = null;
 
         try {
@@ -892,6 +1107,106 @@
             <span class="muted">Last update: --</span>
           `;
         }
+      };
+
+      const refreshAdminMetrics = async () => {
+        if (!adminDashboard || adminDashboard.classList.contains("hidden")) {
+          return;
+        }
+
+        if (!adminApiKeyInput) {
+          return;
+        }
+
+        const adminKey = adminApiKeyInput.value.trim();
+        if (!adminKey) {
+          adminLog.textContent = "Set admin API key first.";
+          return;
+        }
+
+        localStorage.setItem("ccee_admin_key", adminKey);
+        localStorage.setItem("ccee_api_base", getApiBase());
+
+        const { res, payload } = await fetchJson("/v1/admin/metrics", {
+          headers: {
+            "x-api-key": adminKey
+          }
+        });
+
+        if (!res.ok) {
+          adminLog.textContent = `metrics_error ${res.status}: ${format(payload)}`;
+          return;
+        }
+
+        adminQueueDepth.textContent = payload?.queue?.pending ?? "--";
+        adminQueueTarget.textContent = payload?.autoscaling?.queueDepthTarget ?? "--";
+        adminDlqDepth.textContent = payload?.dlq?.pending ?? "--";
+        adminLastUpdate.textContent = payload?.updatedAt
+          ? new Date(payload.updatedAt).toLocaleTimeString()
+          : "--";
+
+        const worker = payload?.ecs?.worker;
+        adminWorkerRunning.textContent = worker?.running ?? "--";
+        adminWorkerDesired.textContent = worker?.desired ?? "--";
+        adminWorkerPending.textContent = worker?.pending ?? "--";
+      };
+
+      const runAdminBurst = async () => {
+        if (!adminApiKeyInput) {
+          return;
+        }
+
+        const adminKey = adminApiKeyInput.value.trim();
+        if (!adminKey) {
+          adminLog.textContent = "Set admin API key first.";
+          return;
+        }
+
+        adminLog.textContent = "Submitting burst to queue...";
+        const { res, payload } = await fetchJson("/v1/admin/simulate/burst", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-api-key": adminKey
+          },
+          body: JSON.stringify({ count: 1000 })
+        });
+
+        if (!res.ok) {
+          adminLog.textContent = `burst_error ${res.status}: ${format(payload)}`;
+          return;
+        }
+
+        adminLog.textContent = `burst_queued count=${payload.count} burstId=${payload.burstId}`;
+        await refreshAdminMetrics();
+      };
+
+      const runDlqReplay = async () => {
+        if (!adminApiKeyInput) {
+          return;
+        }
+
+        const adminKey = adminApiKeyInput.value.trim();
+        if (!adminKey) {
+          adminLog.textContent = "Set admin API key first.";
+          return;
+        }
+
+        adminLog.textContent = "Triggering DLQ replay task...";
+        const { res, payload } = await fetchJson("/v1/admin/runbook/dlq", {
+          method: "POST",
+          headers: {
+            "x-api-key": adminKey
+          }
+        });
+
+        if (!res.ok) {
+          adminLog.textContent = `runbook_error ${res.status}: ${format(payload)}`;
+          return;
+        }
+
+        adminLog.textContent = `dlq_replay_started tasks=${(payload.tasks || []).length}`;
+        await refreshAdminMetrics();
       };
 
       const loadQuotas = async () => {
@@ -1074,12 +1389,37 @@
       loadAuditBtn.addEventListener("click", loadAudit);
       analyzeBtn.addEventListener("click", analyzeLatest);
 
-      initMonacoEditor();
-      refreshHealth();
-      refreshHealthSummary();
-      loadQuotas();
-      loadHistory();
-      loadAudit();
+      if (adminRefreshBtn) {
+        adminRefreshBtn.addEventListener("click", refreshAdminMetrics);
+      }
+      if (adminBurstBtn) {
+        adminBurstBtn.addEventListener("click", runAdminBurst);
+      }
+      if (adminReplayBtn) {
+        adminReplayBtn.addEventListener("click", runDlqReplay);
+      }
+
+      const isAdminRoute = window.location.pathname.startsWith("/admin/observability");
+      if (isAdminRoute) {
+        document.body.classList.add("admin-mode");
+        document.querySelectorAll("[data-public=\"true\"]").forEach((el) => el.classList.add("hidden"));
+        if (adminDashboard) {
+          adminDashboard.classList.remove("hidden");
+        }
+        refreshAdminMetrics();
+        setInterval(refreshAdminMetrics, 3000);
+      } else if (adminDashboard) {
+        adminDashboard.classList.add("hidden");
+      }
+
+      if (!isAdminRoute) {
+        initMonacoEditor();
+        refreshHealth();
+        refreshHealthSummary();
+        loadQuotas();
+        loadHistory();
+        loadAudit();
+      }
     </script>
   </body>
 </html>

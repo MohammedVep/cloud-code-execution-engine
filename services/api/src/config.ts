@@ -25,6 +25,7 @@ const envSchema = z.object({
   MAX_SOURCE_CODE_BYTES: z.coerce.number().int().positive().max(1_000_000).default(100_000),
   MAX_STDIN_BYTES: z.coerce.number().int().positive().max(1_000_000).default(100_000),
   JOB_QUEUE_NAME: z.string().min(1).default("code-jobs"),
+  DLQ_QUEUE_NAME: z.string().min(1).default("code-jobs-dlq"),
   JOB_TTL_SECONDS: z.coerce.number().int().positive().default(86_400),
   JOB_HISTORY_MAX: z.coerce.number().int().positive().max(10_000).default(500),
   JOB_LIST_DEFAULT_LIMIT: z.coerce.number().int().positive().max(200).default(20),
@@ -39,6 +40,27 @@ const envSchema = z.object({
   QUEUE_DEPTH_METRIC_NAME: z.string().min(1).default("PendingJobsCount"),
   QUEUE_DEPTH_PUBLISH_INTERVAL_MS: z.coerce.number().int().min(5_000).max(300_000).default(30_000),
   QUEUE_DEPTH_METRIC_SERVICE_NAME: z.string().min(1).default("ccee-worker"),
+  ECS_CLUSTER_ARN: z.preprocess(
+    (value) => (typeof value === "string" && value.trim().length === 0 ? undefined : value),
+    z.string().min(1).optional()
+  ),
+  ECS_WORKER_SERVICE_NAME: z.string().min(1).default("ccee-worker"),
+  ECS_API_SERVICE_NAME: z.string().min(1).default("ccee-api"),
+  DLQ_REPLAY_TASK_DEFINITION_ARN: z.preprocess(
+    (value) => (typeof value === "string" && value.trim().length === 0 ? undefined : value),
+    z.string().min(1).optional()
+  ),
+  DLQ_REPLAY_SUBNET_IDS: z
+    .string()
+    .default("")
+    .transform((value) => value.trim()),
+  DLQ_REPLAY_SECURITY_GROUP_IDS: z
+    .string()
+    .default("")
+    .transform((value) => value.trim()),
+  DLQ_REPLAY_ASSIGN_PUBLIC_IP: z.enum(["ENABLED", "DISABLED"]).default("DISABLED"),
+  ADMIN_API_KEYS_JSON: z.string().default(JSON.stringify(["dev-local-key"])),
+  ADMIN_BURST_MAX: z.coerce.number().int().positive().max(10_000).default(1_000),
   AI_PROVIDER: z.enum(["none", "openai"]).default("none"),
   OPENAI_API_KEY: z.preprocess(
     (value) => (typeof value === "string" && value.trim().length === 0 ? undefined : value),

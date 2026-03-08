@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { CloudWatchClient, PutMetricDataCommand } from "@aws-sdk/client-cloudwatch";
+import { DescribeServicesCommand, ECSClient, RunTaskCommand } from "@aws-sdk/client-ecs";
 import {
   SUPPORTED_LANGUAGES,
   classifyFailureCategory,
@@ -108,9 +109,25 @@ const redisConnection = {
 
 const redis = new Redis(redisConnection);
 const queue = new Queue(config.JOB_QUEUE_NAME, { connection: redisConnection });
+const dlqQueue = new Queue(config.DLQ_QUEUE_NAME, { connection: redisConnection });
 const cloudWatchClient = new CloudWatchClient({ region: config.AWS_REGION });
+const ecsClient = new ECSClient({ region: config.AWS_REGION });
 const publicRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "public");
 const jwtJwks = config.JWT_JWKS_URL ? createRemoteJWKSet(new URL(config.JWT_JWKS_URL)) : null;
+
+const parseAdminKeys = (value: string): Set<string> => {
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) {
+      return new Set(parsed.map((item) => String(item)).filter((item) => item.length > 0));
+    }
+  } catch (error) {
+    app.log.error({ err: error }, "admin_api_keys_parse_failed");
+  }
+  return new Set<string>();
+};
+
+const adminApiKeys = parseAdminKeys(config.ADMIN_API_KEYS_JSON);
 
 void app.register(fastifyStatic, {
   root: publicRoot
@@ -374,6 +391,50 @@ const getBearerToken = (request: FastifyRequest): string | null => {
 
   const token = match[1].trim();
   return token.length > 0 ? token : null;
+};
+
+const parseIdList = (value: string): string[] =>
+  value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+
+const requireAdmin = async (
+  request: FastifyRequest,
+  reply: FastifyReply
+): Promise<{ apiKey: string; tenant: TenantPrincipal } | null> => {
+  const apiKey = getApiKey(request);
+  if (!apiKey) {
+    await appendAuditEvent(redis, config.AUDIT_STREAM_KEY, {
+      actor: "api",
+      action: "admin_auth_missing",
+      tenantId: "unknown",
+      metadata: { path: request.routeOptions.url ?? request.url, traceId: request.traceId }
+    });
+
+    reply.code(401).send({ error: "admin_auth_missing", traceId: request.traceId });
+    return null;
+  }
+
+  if (!adminApiKeys.has(apiKey)) {
+    await appendAuditEvent(redis, config.AUDIT_STREAM_KEY, {
+      actor: "api",
+      action: "admin_auth_denied",
+      tenantId: "unknown",
+      metadata: { path: request.routeOptions.url ?? request.url, traceId: request.traceId }
+    });
+
+    reply.code(403).send({ error: "admin_forbidden", traceId: request.traceId });
+    return null;
+  }
+
+  const tenant = tenantRegistry.get(apiKey);
+  if (!tenant) {
+    reply.code(403).send({ error: "admin_key_not_mapped", traceId: request.traceId });
+    return null;
+  }
+
+  return { apiKey, tenant };
 };
 
 const getTraceId = (request: FastifyRequest): string => {
@@ -670,6 +731,253 @@ app.get("/health/summary", async () => {
 });
 
 app.get("/", async (_request, reply) => reply.sendFile("index.html"));
+app.get("/admin/observability", async (_request, reply) => reply.sendFile("index.html"));
+
+const adminBurstSchema = z.object({
+  count: z.coerce.number().int().min(1).max(config.ADMIN_BURST_MAX).default(config.ADMIN_BURST_MAX)
+});
+
+app.get("/v1/admin/metrics", async (request, reply) => {
+  const admin = await requireAdmin(request, reply);
+  if (!admin) {
+    return;
+  }
+
+  const counts = await queue.getJobCounts(
+    "waiting",
+    "active",
+    "delayed",
+    "paused",
+    "prioritized",
+    "waiting-children",
+    "failed",
+    "completed"
+  );
+  const pending =
+    (counts.waiting ?? 0) +
+    (counts.active ?? 0) +
+    (counts.delayed ?? 0) +
+    (counts.paused ?? 0) +
+    (counts.prioritized ?? 0) +
+    (counts["waiting-children"] ?? 0);
+
+  const dlqCounts = await dlqQueue.getJobCounts("waiting", "active", "delayed", "paused", "failed", "completed");
+  const dlqPending =
+    (dlqCounts.waiting ?? 0) + (dlqCounts.active ?? 0) + (dlqCounts.delayed ?? 0) + (dlqCounts.paused ?? 0);
+
+  let ecs = null;
+  if (config.ECS_CLUSTER_ARN) {
+    try {
+      const describe = await ecsClient.send(
+        new DescribeServicesCommand({
+          cluster: config.ECS_CLUSTER_ARN,
+          services: [config.ECS_WORKER_SERVICE_NAME, config.ECS_API_SERVICE_NAME]
+        })
+      );
+
+      const lookup = new Map(
+        (describe.services ?? []).map((service) => [service.serviceName ?? "unknown", service])
+      );
+      const worker = lookup.get(config.ECS_WORKER_SERVICE_NAME);
+      const api = lookup.get(config.ECS_API_SERVICE_NAME);
+
+      ecs = {
+        clusterArn: config.ECS_CLUSTER_ARN,
+        worker: worker
+          ? {
+              serviceName: worker.serviceName,
+              desired: worker.desiredCount ?? 0,
+              running: worker.runningCount ?? 0,
+              pending: worker.pendingCount ?? 0,
+              taskDefinition: worker.taskDefinition
+            }
+          : null,
+        api: api
+          ? {
+              serviceName: api.serviceName,
+              desired: api.desiredCount ?? 0,
+              running: api.runningCount ?? 0,
+              pending: api.pendingCount ?? 0,
+              taskDefinition: api.taskDefinition
+            }
+          : null
+      };
+    } catch (error) {
+      app.log.error({ err: error }, "admin_metrics_ecs_failed");
+      ecs = { error: "ecs_describe_failed" };
+    }
+  }
+
+  return reply.send({
+    status: "ok",
+    traceId: request.traceId,
+    queue: { pending, counts },
+    dlq: { pending: dlqPending, counts: dlqCounts },
+    autoscaling: { queueDepthTarget: config.QUEUE_DEPTH_TARGET },
+    ecs,
+    updatedAt: new Date().toISOString()
+  });
+});
+
+app.post("/v1/admin/runbook/dlq", async (request, reply) => {
+  const admin = await requireAdmin(request, reply);
+  if (!admin) {
+    return;
+  }
+
+  if (!config.ECS_CLUSTER_ARN || !config.DLQ_REPLAY_TASK_DEFINITION_ARN) {
+    return reply.code(503).send({
+      error: "dlq_replay_not_configured",
+      traceId: request.traceId
+    });
+  }
+
+  const subnetIds = parseIdList(config.DLQ_REPLAY_SUBNET_IDS);
+  const securityGroupIds = parseIdList(config.DLQ_REPLAY_SECURITY_GROUP_IDS);
+  if (subnetIds.length === 0 || securityGroupIds.length === 0) {
+    return reply.code(503).send({
+      error: "dlq_replay_network_missing",
+      traceId: request.traceId
+    });
+  }
+
+  const result = await ecsClient.send(
+    new RunTaskCommand({
+      cluster: config.ECS_CLUSTER_ARN,
+      taskDefinition: config.DLQ_REPLAY_TASK_DEFINITION_ARN,
+      launchType: "FARGATE",
+      count: 1,
+      networkConfiguration: {
+        awsvpcConfiguration: {
+          subnets: subnetIds,
+          securityGroups: securityGroupIds,
+          assignPublicIp: config.DLQ_REPLAY_ASSIGN_PUBLIC_IP
+        }
+      }
+    })
+  );
+
+  await appendAuditEvent(redis, config.AUDIT_STREAM_KEY, {
+    actor: "api",
+    action: "admin_runbook_triggered",
+    tenantId: admin.tenant.tenantId,
+    metadata: {
+      taskDefinition: config.DLQ_REPLAY_TASK_DEFINITION_ARN,
+      tasks: JSON.stringify(result.tasks?.map((task) => task.taskArn).filter(Boolean) ?? []),
+      traceId: request.traceId
+    }
+  });
+
+  return reply.send({
+    status: "started",
+    traceId: request.traceId,
+    tasks: result.tasks?.map((task) => task.taskArn).filter(Boolean) ?? [],
+    failures: result.failures ?? []
+  });
+});
+
+app.post("/v1/admin/simulate/burst", async (request, reply) => {
+  const admin = await requireAdmin(request, reply);
+  if (!admin) {
+    return;
+  }
+
+  const parsed = adminBurstSchema.safeParse(request.body ?? {});
+  if (!parsed.success) {
+    return reply.code(400).send({
+      error: "validation_error",
+      traceId: request.traceId,
+      issues: parsed.error.flatten()
+    });
+  }
+
+  const count = parsed.data.count;
+  const burstId = randomUUID();
+  const now = nowIso();
+  const dateKey = now.slice(0, 10);
+  const tenantId = admin.tenant.tenantId;
+  const apiKeyFingerprint = fingerprintIdentity(`admin:${admin.apiKey}`);
+
+  await redis.incrby(tenantActiveJobsKey(tenantId), count);
+  await redis.incrby(tenantDailyJobsKey(tenantId, dateKey), count);
+  await redis.expire(tenantDailyJobsKey(tenantId, dateKey), config.DAILY_QUOTA_TTL_SECONDS);
+
+  const batchSize = 50;
+  for (let offset = 0; offset < count; offset += batchSize) {
+    const batch = Math.min(batchSize, count - offset);
+    const tasks = [];
+
+    for (let index = 0; index < batch; index += 1) {
+      const jobId = randomUUID();
+      const payload = queueJobPayloadSchema.parse({
+        jobId,
+        tenant: {
+          tenantId,
+          apiKeyFingerprint
+        },
+        traceId: request.traceId,
+        request: {
+          language: "python",
+          sourceCode: `print(${offset + index + 1})`,
+          stdin: "",
+          timeoutMs: 3000,
+          memoryMb: 128,
+          cpuMillicores: 256
+        },
+        createdAt: now
+      });
+
+      const key = redisJobKey(jobId);
+      tasks.push(
+        redis.hset(key, {
+          jobId,
+          tenantId: payload.tenant.tenantId,
+          traceId: request.traceId,
+          status: "queued",
+          language: payload.request.language,
+          sourceCode: payload.request.sourceCode,
+          stdin: payload.request.stdin ?? "",
+          timeoutMs: String(payload.request.timeoutMs),
+          memoryMb: String(payload.request.memoryMb),
+          cpuMillicores: String(payload.request.cpuMillicores),
+          maxAttempts: String(config.QUEUE_JOB_ATTEMPTS),
+          attemptsMade: "0",
+          currentAttempt: "1",
+          createdAt: now,
+          updatedAt: now
+        }),
+        redis.expire(key, config.JOB_TTL_SECONDS),
+        appendHistoryItem(payload.tenant.tenantId, jobId),
+        queue.add(jobId, payload, {
+          jobId,
+          attempts: config.QUEUE_JOB_ATTEMPTS,
+          backoff: {
+            type: "custom",
+            delay: config.QUEUE_RETRY_BACKOFF_MS
+          },
+          removeOnComplete: { age: config.JOB_TTL_SECONDS },
+          removeOnFail: { age: config.JOB_TTL_SECONDS }
+        })
+      );
+    }
+
+    await Promise.all(tasks);
+  }
+
+  await appendAuditEvent(redis, config.AUDIT_STREAM_KEY, {
+    actor: "api",
+    action: "admin_burst_submitted",
+    tenantId,
+    metadata: { burstId, count, traceId: request.traceId }
+  });
+
+  return reply.send({
+    status: "queued",
+    traceId: request.traceId,
+    burstId,
+    count
+  });
+});
 
 app.get("/v1/quotas", async (request, reply) => {
   const tenant = await authenticateTenant(request, reply);

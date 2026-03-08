@@ -447,6 +447,18 @@ variable "tenant_policies_json" {
   default     = "{}"
 }
 
+variable "admin_api_keys_json" {
+  description = "JSON array of API keys allowed to access admin observability endpoints"
+  type        = string
+  default     = "[\"dev-local-key\"]"
+}
+
+variable "admin_burst_max" {
+  description = "Maximum burst size allowed for admin simulate burst endpoint"
+  type        = number
+  default     = 1000
+}
+
 variable "redis_node_type" {
   description = "ElastiCache node type"
   type        = string

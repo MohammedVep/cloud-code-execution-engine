@@ -366,6 +366,35 @@ resource "aws_iam_role_policy" "api_metrics" {
   })
 }
 
+resource "aws_iam_role_policy" "api_admin_ecs" {
+  name = "${local.name_prefix}-api-admin-ecs"
+  role = aws_iam_role.api_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Sid      = "AllowDescribeEcsServices",
+        Effect   = "Allow",
+        Action   = ["ecs:DescribeServices"],
+        Resource = "*"
+      },
+      {
+        Sid      = "AllowRunDlqReplayTask",
+        Effect   = "Allow",
+        Action   = ["ecs:RunTask"],
+        Resource = [aws_ecs_task_definition.dlq_replay.arn]
+      },
+      {
+        Sid      = "AllowPassDlqReplayRoles",
+        Effect   = "Allow",
+        Action   = ["iam:PassRole"],
+        Resource = [aws_iam_role.task_execution.arn, aws_iam_role.worker_task.arn]
+      }
+    ]
+  })
+}
+
 resource "aws_iam_role" "worker_task" {
   name               = "${local.name_prefix}-worker-task-role"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume_role.json
@@ -539,6 +568,7 @@ resource "aws_ecs_task_definition" "api" {
         { name = "MAX_SOURCE_CODE_BYTES", value = tostring(var.max_source_code_bytes) },
         { name = "MAX_STDIN_BYTES", value = tostring(var.max_stdin_bytes) },
         { name = "JOB_QUEUE_NAME", value = var.job_queue_name },
+        { name = "DLQ_QUEUE_NAME", value = var.dlq_queue_name },
         { name = "JOB_TTL_SECONDS", value = tostring(var.job_ttl_seconds) },
         { name = "JOB_HISTORY_MAX", value = tostring(var.job_history_max) },
         { name = "JOB_LIST_DEFAULT_LIMIT", value = tostring(var.job_list_default_limit) },
@@ -552,6 +582,15 @@ resource "aws_ecs_task_definition" "api" {
         { name = "QUEUE_DEPTH_METRIC_NAME", value = var.queue_depth_metric_name },
         { name = "QUEUE_DEPTH_PUBLISH_INTERVAL_MS", value = tostring(var.queue_depth_publish_interval_ms) },
         { name = "QUEUE_DEPTH_METRIC_SERVICE_NAME", value = local.worker_service_name },
+        { name = "ECS_CLUSTER_ARN", value = aws_ecs_cluster.this.arn },
+        { name = "ECS_WORKER_SERVICE_NAME", value = local.worker_service_name },
+        { name = "ECS_API_SERVICE_NAME", value = "${local.name_prefix}-api" },
+        { name = "DLQ_REPLAY_TASK_DEFINITION_ARN", value = aws_ecs_task_definition.dlq_replay.arn },
+        { name = "DLQ_REPLAY_SUBNET_IDS", value = join(",", local.private_subnet_ids) },
+        { name = "DLQ_REPLAY_SECURITY_GROUP_IDS", value = aws_security_group.worker.id },
+        { name = "DLQ_REPLAY_ASSIGN_PUBLIC_IP", value = var.worker_assign_public_ip ? "ENABLED" : "DISABLED" },
+        { name = "ADMIN_API_KEYS_JSON", value = var.admin_api_keys_json },
+        { name = "ADMIN_BURST_MAX", value = tostring(var.admin_burst_max) },
         { name = "ANALYSIS_MAX_SOURCE_CHARS", value = tostring(var.analysis_max_source_chars) },
         { name = "AI_PROVIDER", value = var.ai_provider },
         { name = "OPENAI_MODEL", value = var.openai_model },
