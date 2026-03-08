@@ -380,6 +380,16 @@ resource "aws_iam_role_policy" "api_admin_ecs" {
         Resource = "*"
       },
       {
+        Sid      = "AllowDescribeAutoScaling",
+        Effect   = "Allow",
+        Action   = [
+          "application-autoscaling:DescribeScalingPolicies",
+          "application-autoscaling:DescribeScalingActivities",
+          "application-autoscaling:DescribeScalableTargets"
+        ],
+        Resource = "*"
+      },
+      {
         Sid      = "AllowRunDlqReplayTask",
         Effect   = "Allow",
         Action   = ["ecs:RunTask"],

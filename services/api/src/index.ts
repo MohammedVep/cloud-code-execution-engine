@@ -3,6 +3,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { CloudWatchClient, PutMetricDataCommand } from "@aws-sdk/client-cloudwatch";
+import {
+  DescribeScalingActivitiesCommand,
+  DescribeScalingPoliciesCommand,
+  DescribeScalableTargetsCommand,
+  ApplicationAutoScalingClient
+} from "@aws-sdk/client-application-auto-scaling";
 import { DescribeServicesCommand, ECSClient, RunTaskCommand } from "@aws-sdk/client-ecs";
 import {
   SUPPORTED_LANGUAGES,
@@ -112,6 +118,7 @@ const queue = new Queue(config.JOB_QUEUE_NAME, { connection: redisConnection });
 const dlqQueue = new Queue(config.DLQ_QUEUE_NAME, { connection: redisConnection });
 const cloudWatchClient = new CloudWatchClient({ region: config.AWS_REGION });
 const ecsClient = new ECSClient({ region: config.AWS_REGION });
+const autoScalingClient = new ApplicationAutoScalingClient({ region: config.AWS_REGION });
 const publicRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "public");
 const jwtJwks = config.JWT_JWKS_URL ? createRemoteJWKSet(new URL(config.JWT_JWKS_URL)) : null;
 
@@ -128,6 +135,14 @@ const parseAdminKeys = (value: string): Set<string> => {
 };
 
 const adminApiKeys = parseAdminKeys(config.ADMIN_API_KEYS_JSON);
+
+const getClusterName = (clusterArnOrName: string): string => {
+  if (!clusterArnOrName.includes(":")) {
+    return clusterArnOrName;
+  }
+  const parts = clusterArnOrName.split("/");
+  return parts[parts.length - 1] || clusterArnOrName;
+};
 
 void app.register(fastifyStatic, {
   root: publicRoot
@@ -766,6 +781,83 @@ app.get("/v1/admin/metrics", async (request, reply) => {
     (dlqCounts.waiting ?? 0) + (dlqCounts.active ?? 0) + (dlqCounts.delayed ?? 0) + (dlqCounts.paused ?? 0);
 
   let ecs = null;
+  type AutoScalingSnapshot = {
+    queueDepthTarget: number;
+    targetValue?: number | null;
+    policyName?: string | null;
+    minCapacity?: number | null;
+    maxCapacity?: number | null;
+    lastActivity?: {
+      statusCode: string | null;
+      description: string | null;
+      cause: string | null;
+      startTime: string | null;
+    } | null;
+    error?: string;
+  };
+
+  let autoScaling: AutoScalingSnapshot = {
+    queueDepthTarget: config.QUEUE_DEPTH_TARGET
+  };
+
+  const resourceId = config.ECS_CLUSTER_ARN
+    ? `service/${getClusterName(config.ECS_CLUSTER_ARN)}/${config.ECS_WORKER_SERVICE_NAME}`
+    : null;
+  if (resourceId) {
+    try {
+      const [policies, targets, activities] = await Promise.all([
+        autoScalingClient.send(
+          new DescribeScalingPoliciesCommand({
+            ServiceNamespace: "ecs",
+            ResourceId: resourceId,
+            ScalableDimension: "ecs:service:DesiredCount"
+          })
+        ),
+        autoScalingClient.send(
+          new DescribeScalableTargetsCommand({
+            ServiceNamespace: "ecs",
+            ResourceIds: [resourceId],
+            ScalableDimension: "ecs:service:DesiredCount"
+          })
+        ),
+        autoScalingClient.send(
+          new DescribeScalingActivitiesCommand({
+            ServiceNamespace: "ecs",
+            ResourceId: resourceId,
+            ScalableDimension: "ecs:service:DesiredCount",
+            MaxResults: 1
+          })
+        )
+      ]);
+
+      const policy = policies.ScalingPolicies?.[0];
+      const target = targets.ScalableTargets?.[0];
+      const activity = activities.ScalingActivities?.[0];
+
+      autoScaling = {
+        queueDepthTarget: config.QUEUE_DEPTH_TARGET,
+        targetValue: policy?.TargetTrackingScalingPolicyConfiguration?.TargetValue ?? null,
+        policyName: policy?.PolicyName ?? null,
+        minCapacity: target?.MinCapacity ?? null,
+        maxCapacity: target?.MaxCapacity ?? null,
+        lastActivity: activity
+          ? {
+              statusCode: activity.StatusCode ?? null,
+              description: activity.Description ?? null,
+              cause: activity.Cause ?? null,
+              startTime: activity.StartTime?.toISOString() ?? null
+            }
+          : null
+      };
+    } catch (error) {
+      app.log.error({ err: error }, "admin_metrics_autoscaling_failed");
+      autoScaling = {
+        queueDepthTarget: config.QUEUE_DEPTH_TARGET,
+        error: "autoscaling_describe_failed"
+      };
+    }
+  }
+
   if (config.ECS_CLUSTER_ARN) {
     try {
       const describe = await ecsClient.send(
@@ -813,7 +905,7 @@ app.get("/v1/admin/metrics", async (request, reply) => {
     traceId: request.traceId,
     queue: { pending, counts },
     dlq: { pending: dlqPending, counts: dlqCounts },
-    autoscaling: { queueDepthTarget: config.QUEUE_DEPTH_TARGET },
+    autoscaling: autoScaling,
     ecs,
     updatedAt: new Date().toISOString()
   });

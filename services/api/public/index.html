@@ -689,13 +689,14 @@
           <div class="admin-card">
             <h4>Queue Depth</h4>
             <div class="admin-metric" id="admin-queue-depth">--</div>
-            <div class="admin-sub">Target per worker: <span id="admin-queue-target">--</span></div>
+            <div class="admin-sub">Config target: <span id="admin-queue-target">--</span></div>
+            <div class="admin-sub">Target tracking: <span id="admin-scaling-target">--</span></div>
           </div>
           <div class="admin-card">
             <h4>Active Workers</h4>
             <div class="admin-metric" id="admin-worker-running">--</div>
             <div class="admin-sub">
-              Desired: <span id="admin-worker-desired">--</span> • Pending: <span id="admin-worker-pending">--</span>
+              Desired (Auto Scaling): <span id="admin-worker-desired">--</span> • Provisioning: <span id="admin-worker-pending">--</span>
             </div>
           </div>
           <div class="admin-card">
@@ -935,6 +936,7 @@
       const adminDlqDepth = document.getElementById("admin-dlq-depth");
       const adminLastUpdate = document.getElementById("admin-last-update");
       const adminLog = document.getElementById("admin-log");
+      const adminScalingTarget = document.getElementById("admin-scaling-target");
 
       let pollHandle = null;
       let latestJobId = null;
@@ -1140,6 +1142,7 @@
 
         adminQueueDepth.textContent = payload?.queue?.pending ?? "--";
         adminQueueTarget.textContent = payload?.autoscaling?.queueDepthTarget ?? "--";
+        adminScalingTarget.textContent = payload?.autoscaling?.targetValue ?? "--";
         adminDlqDepth.textContent = payload?.dlq?.pending ?? "--";
         adminLastUpdate.textContent = payload?.updatedAt
           ? new Date(payload.updatedAt).toLocaleTimeString()

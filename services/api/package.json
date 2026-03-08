@@ -12,6 +12,7 @@
     "test": "node --import tsx --test src/**/*.test.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-application-auto-scaling": "^3.1004.0",
     "@aws-sdk/client-cloudwatch": "^3.1004.0",
     "@aws-sdk/client-ecs": "^3.1004.0",
     "@ccee/common": "0.1.0",
