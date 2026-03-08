@@ -642,6 +642,92 @@
         font-size: 0.78rem;
         overflow-x: auto;
       }
+
+      .breach-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        padding: 0.35rem 0.65rem;
+        border-radius: 999px;
+        font-size: 0.78rem;
+        border: 1px solid rgba(100, 170, 180, 0.35);
+        background: rgba(32, 58, 64, 0.5);
+        color: #c9e4ea;
+      }
+
+      .breach-badge::before {
+        content: "";
+        width: 0.5rem;
+        height: 0.5rem;
+        border-radius: 999px;
+        background: #77c5d3;
+      }
+
+      .breach-badge.breached {
+        border-color: rgba(255, 107, 107, 0.65);
+        background: rgba(96, 25, 25, 0.55);
+        color: #ffd5d5;
+        animation: pulse 1.5s infinite;
+      }
+
+      .breach-badge.breached::before {
+        background: #ff5c5c;
+      }
+
+      @keyframes pulse {
+        0% {
+          box-shadow: 0 0 0 0 rgba(255, 92, 92, 0.34);
+        }
+        70% {
+          box-shadow: 0 0 0 10px rgba(255, 92, 92, 0);
+        }
+        100% {
+          box-shadow: 0 0 0 0 rgba(255, 92, 92, 0);
+        }
+      }
+
+      .timeline-panel {
+        padding: 1rem 1.2rem;
+        border-radius: 1rem;
+        background: rgba(16, 23, 30, 0.92);
+        border: 1px solid rgba(115, 142, 152, 0.25);
+      }
+
+      .timeline-panel h4 {
+        margin: 0 0 0.7rem;
+        font-size: 0.92rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: rgba(178, 210, 218, 0.75);
+      }
+
+      .timeline-list {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        gap: 0.7rem;
+      }
+
+      .timeline-item {
+        padding: 0.65rem 0.75rem;
+        border-radius: 0.75rem;
+        background: rgba(9, 14, 19, 0.9);
+        border: 1px solid rgba(100, 130, 140, 0.2);
+      }
+
+      .timeline-item strong {
+        display: block;
+        font-size: 0.8rem;
+        color: rgba(220, 236, 240, 0.9);
+      }
+
+      .timeline-item span {
+        display: block;
+        margin-top: 0.2rem;
+        font-size: 0.78rem;
+        color: rgba(179, 203, 209, 0.86);
+      }
     </style>
   </head>
   <body>
@@ -671,6 +757,7 @@
             <span class="kicker mono">Internal SRE Dashboard</span>
             <h2>Observability Control Plane</h2>
             <p class="admin-muted">Live queue depth, DLQ size, and ECS worker capacity. Polling every 3s.</p>
+            <span id="admin-breach-badge" class="breach-badge">Target Stable</span>
           </div>
           <div class="admin-controls">
             <label>
@@ -710,6 +797,16 @@
           <button id="admin-burst" class="btn" type="button">Simulate 1,000 Payload Burst</button>
           <button id="admin-replay" class="btn secondary" type="button">Execute Runbook: Replay DLQ</button>
           <pre id="admin-log" class="admin-log">Admin runbook output will appear here.</pre>
+        </div>
+
+        <div class="timeline-panel">
+          <h4>Scaling Activity Timeline (Last 5)</h4>
+          <ul id="admin-activity-list" class="timeline-list">
+            <li class="timeline-item">
+              <strong>No scaling activities loaded yet.</strong>
+              <span>Run Refresh to fetch control-plane events.</span>
+            </li>
+          </ul>
         </div>
       </section>
 
@@ -937,6 +1034,8 @@
       const adminLastUpdate = document.getElementById("admin-last-update");
       const adminLog = document.getElementById("admin-log");
       const adminScalingTarget = document.getElementById("admin-scaling-target");
+      const adminBreachBadge = document.getElementById("admin-breach-badge");
+      const adminActivityList = document.getElementById("admin-activity-list");
 
       let pollHandle = null;
       let latestJobId = null;
@@ -1111,6 +1210,68 @@
         }
       };
 
+      const toNumber = (value, fallback = 0) => {
+        const number = Number(value);
+        return Number.isFinite(number) ? number : fallback;
+      };
+
+      const renderScalingActivities = (activities) => {
+        if (!adminActivityList) {
+          return;
+        }
+
+        const list = Array.isArray(activities) ? activities : [];
+        if (list.length === 0) {
+          adminActivityList.innerHTML = `
+            <li class="timeline-item">
+              <strong>No recent scaling activities.</strong>
+              <span>Once target tracking scales in/out, events appear here.</span>
+            </li>
+          `;
+          return;
+        }
+
+        adminActivityList.innerHTML = list
+          .map((activity) => {
+            const timeLabel = activity?.startTime ? new Date(activity.startTime).toLocaleTimeString() : "--";
+            const status = activity?.statusCode || "UNKNOWN";
+            const description = activity?.description || "No description";
+            const cause = activity?.cause || "No cause provided";
+            return `
+              <li class="timeline-item">
+                <strong>${timeLabel} • ${status}</strong>
+                <span>${description}</span>
+                <span>${cause}</span>
+              </li>
+            `;
+          })
+          .join("");
+      };
+
+      const updateBreachBadge = ({ pending, target, desired, running }) => {
+        if (!adminBreachBadge) {
+          return;
+        }
+
+        const pendingJobs = toNumber(pending, 0);
+        const targetPerTask = toNumber(target, 0);
+        const desiredCount = toNumber(desired, 0);
+        const runningCount = toNumber(running, 0);
+
+        const capacityForMath = Math.max(desiredCount, runningCount, 1);
+        const loadPerCapacity = pendingJobs / capacityForMath;
+        const breached = targetPerTask > 0 && loadPerCapacity > targetPerTask;
+
+        adminBreachBadge.classList.remove("breached");
+        if (breached) {
+          adminBreachBadge.classList.add("breached");
+          adminBreachBadge.textContent = `Target Breached: ${loadPerCapacity.toFixed(1)} jobs/task`;
+          return;
+        }
+
+        adminBreachBadge.textContent = `Target Stable: ${loadPerCapacity.toFixed(1)} jobs/task`;
+      };
+
       const refreshAdminMetrics = async () => {
         if (!adminDashboard || adminDashboard.classList.contains("hidden")) {
           return;
@@ -1137,6 +1298,11 @@
 
         if (!res.ok) {
           adminLog.textContent = `metrics_error ${res.status}: ${format(payload)}`;
+          if (adminBreachBadge) {
+            adminBreachBadge.classList.remove("breached");
+            adminBreachBadge.textContent = "Target Unknown";
+          }
+          renderScalingActivities([]);
           return;
         }
 
@@ -1149,9 +1315,22 @@
           : "--";
 
         const worker = payload?.ecs?.worker;
-        adminWorkerRunning.textContent = worker?.running ?? "--";
-        adminWorkerDesired.textContent = worker?.desired ?? "--";
+        const pending = payload?.queue?.pending ?? "--";
+        const target = payload?.autoscaling?.targetValue ?? payload?.autoscaling?.queueDepthTarget ?? "--";
+        const desired = worker?.desired ?? "--";
+        const running = worker?.running ?? "--";
+
+        adminWorkerRunning.textContent = running;
+        adminWorkerDesired.textContent = desired;
         adminWorkerPending.textContent = worker?.pending ?? "--";
+
+        updateBreachBadge({
+          pending,
+          target,
+          desired,
+          running
+        });
+        renderScalingActivities(payload?.autoscaling?.activities);
       };
 
       const runAdminBurst = async () => {

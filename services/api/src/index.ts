@@ -787,6 +787,12 @@ app.get("/v1/admin/metrics", async (request, reply) => {
     policyName?: string | null;
     minCapacity?: number | null;
     maxCapacity?: number | null;
+    activities?: Array<{
+      statusCode: string | null;
+      description: string | null;
+      cause: string | null;
+      startTime: string | null;
+    }>;
     lastActivity?: {
       statusCode: string | null;
       description: string | null;
@@ -825,14 +831,20 @@ app.get("/v1/admin/metrics", async (request, reply) => {
             ServiceNamespace: "ecs",
             ResourceId: resourceId,
             ScalableDimension: "ecs:service:DesiredCount",
-            MaxResults: 1
+            MaxResults: 5
           })
         )
       ]);
 
       const policy = policies.ScalingPolicies?.[0];
       const target = targets.ScalableTargets?.[0];
-      const activity = activities.ScalingActivities?.[0];
+      const recentActivities = (activities.ScalingActivities ?? []).map((activity) => ({
+        statusCode: activity.StatusCode ?? null,
+        description: activity.Description ?? null,
+        cause: activity.Cause ?? null,
+        startTime: activity.StartTime?.toISOString() ?? null
+      }));
+      const activity = recentActivities[0] ?? null;
 
       autoScaling = {
         queueDepthTarget: config.QUEUE_DEPTH_TARGET,
@@ -840,14 +852,8 @@ app.get("/v1/admin/metrics", async (request, reply) => {
         policyName: policy?.PolicyName ?? null,
         minCapacity: target?.MinCapacity ?? null,
         maxCapacity: target?.MaxCapacity ?? null,
+        activities: recentActivities,
         lastActivity: activity
-          ? {
-              statusCode: activity.StatusCode ?? null,
-              description: activity.Description ?? null,
-              cause: activity.Cause ?? null,
-              startTime: activity.StartTime?.toISOString() ?? null
-            }
-          : null
       };
     } catch (error) {
       app.log.error({ err: error }, "admin_metrics_autoscaling_failed");
