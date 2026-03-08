@@ -588,6 +588,38 @@ app.addHook("onResponse", async (request, reply) => {
 });
 
 app.get("/health", async () => ({ status: "ok", service: "api" }));
+app.get("/health/summary", async () => {
+  const counts = await queue.getJobCounts(
+    "waiting",
+    "active",
+    "delayed",
+    "paused",
+    "prioritized",
+    "waiting-children",
+    "failed",
+    "completed"
+  );
+  const pending =
+    (counts.waiting ?? 0) +
+    (counts.active ?? 0) +
+    (counts.delayed ?? 0) +
+    (counts.paused ?? 0) +
+    (counts.prioritized ?? 0) +
+    (counts["waiting-children"] ?? 0);
+
+  return {
+    status: "ok",
+    service: "api",
+    queue: {
+      pending,
+      counts
+    },
+    autoscaling: {
+      queueDepthTarget: config.QUEUE_DEPTH_TARGET
+    },
+    updatedAt: new Date().toISOString()
+  };
+});
 
 app.get("/", async (_request, reply) => reply.sendFile("index.html"));
 

@@ -127,6 +127,24 @@
         background: var(--error);
       }
 
+      .health-summary {
+        display: flex;
+        flex-direction: column;
+        gap: 0.2rem;
+        padding: 0.45rem 0.7rem;
+        border-radius: 12px;
+        border: 1px solid color-mix(in srgb, var(--line), transparent 30%);
+        background: rgba(255, 255, 255, 0.7);
+        font-size: 0.78rem;
+        color: var(--ink-muted);
+        min-width: 210px;
+      }
+
+      .health-summary strong {
+        font-size: 0.8rem;
+        color: var(--ink);
+      }
+
       .btn {
         border: none;
         border-radius: 999px;
@@ -507,6 +525,12 @@
           <span>Cloud Code Execution Engine</span>
         </div>
         <div style="display: flex; align-items: center; gap: 0.6rem">
+          <div class="health-summary" id="health-summary">
+            <strong>Autoscale Lens</strong>
+            <span>Queue depth: --</span>
+            <span>Target per worker: --</span>
+            <span class="muted">Last update: --</span>
+          </div>
           <span id="health-pill" class="health-pill">Checking backend</span>
           <button id="refresh-health" class="btn secondary" type="button">Refresh</button>
         </div>
@@ -705,6 +729,7 @@
     <script>
       const healthPill = document.getElementById("health-pill");
       const refreshHealthBtn = document.getElementById("refresh-health");
+      const healthSummary = document.getElementById("health-summary");
       const form = document.getElementById("job-form");
       const languageSelect = document.getElementById("language");
       const sourceCodeInput = document.getElementById("sourceCode");
@@ -836,6 +861,35 @@
         } catch (error) {
           healthPill.className = "health-pill error";
           healthPill.textContent = "Backend Unreachable";
+        }
+      };
+
+      const refreshHealthSummary = async () => {
+        if (!healthSummary) {
+          return;
+        }
+
+        try {
+          const { res, payload } = await fetchJson("/health/summary");
+          if (!res.ok) {
+            throw new Error(`health_summary_failed_${res.status}`);
+          }
+          const pending = payload?.queue?.pending ?? "--";
+          const target = payload?.autoscaling?.queueDepthTarget ?? "--";
+          const updatedAt = payload?.updatedAt ? new Date(payload.updatedAt).toLocaleTimeString() : "--";
+          healthSummary.innerHTML = `
+            <strong>Autoscale Lens</strong>
+            <span>Queue depth: ${pending}</span>
+            <span>Target per worker: ${target}</span>
+            <span class="muted">Last update: ${updatedAt}</span>
+          `;
+        } catch (error) {
+          healthSummary.innerHTML = `
+            <strong>Autoscale Lens</strong>
+            <span>Queue depth: unavailable</span>
+            <span>Target per worker: --</span>
+            <span class="muted">Last update: --</span>
+          `;
         }
       };
 
@@ -1010,7 +1064,10 @@
         setSourceCodeValue(templates[languageSelect.value] || templates.javascript);
       });
 
-      refreshHealthBtn.addEventListener("click", refreshHealth);
+      refreshHealthBtn.addEventListener("click", () => {
+        refreshHealth();
+        refreshHealthSummary();
+      });
       loadQuotasBtn.addEventListener("click", loadQuotas);
       loadHistoryBtn.addEventListener("click", loadHistory);
       loadAuditBtn.addEventListener("click", loadAudit);
@@ -1018,6 +1075,7 @@
 
       initMonacoEditor();
       refreshHealth();
+      refreshHealthSummary();
       loadQuotas();
       loadHistory();
       loadAudit();

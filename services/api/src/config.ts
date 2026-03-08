@@ -33,6 +33,7 @@ const envSchema = z.object({
   QUEUE_JOB_ATTEMPTS: z.coerce.number().int().positive().max(10).default(3),
   QUEUE_RETRY_BACKOFF_MS: z.coerce.number().int().positive().max(60_000).default(1_000),
   ANALYSIS_MAX_SOURCE_CHARS: z.coerce.number().int().positive().max(50_000).default(8_000),
+  QUEUE_DEPTH_TARGET: z.coerce.number().int().positive().max(10_000).default(25),
   AI_PROVIDER: z.enum(["none", "openai"]).default("none"),
   OPENAI_API_KEY: z.preprocess(
     (value) => (typeof value === "string" && value.trim().length === 0 ? undefined : value),

@@ -511,6 +511,7 @@ resource "aws_ecs_task_definition" "api" {
         { name = "DAILY_QUOTA_TTL_SECONDS", value = tostring(var.daily_quota_ttl_seconds) },
         { name = "QUEUE_JOB_ATTEMPTS", value = tostring(var.queue_job_attempts) },
         { name = "QUEUE_RETRY_BACKOFF_MS", value = tostring(var.queue_retry_backoff_ms) },
+        { name = "QUEUE_DEPTH_TARGET", value = tostring(var.worker_queue_depth_target) },
         { name = "ANALYSIS_MAX_SOURCE_CHARS", value = tostring(var.analysis_max_source_chars) },
         { name = "AI_PROVIDER", value = var.ai_provider },
         { name = "OPENAI_MODEL", value = var.openai_model },
