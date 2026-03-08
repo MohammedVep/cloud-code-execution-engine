@@ -42,6 +42,10 @@ Optional env vars:
 - `DLQ_BATCH_SIZE` (default `50`)
 - `DRY_RUN=true` (no writes)
 
+## Scheduled Self-Healing (EventBridge)
+
+Terraform provisions an EventBridge schedule that runs a short-lived Fargate task with the replay command on a cadence (`dlq_replay_schedule_expression`, default `rate(6 hours)`).
+
 ## How to Scale to Higher Volume (10k+/day)
 1. Increase worker max capacity and tune target queue depth.
 2. Add queue partitioning by tenant tier (gold/silver/bronze).

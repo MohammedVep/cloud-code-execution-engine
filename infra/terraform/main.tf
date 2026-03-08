@@ -741,6 +741,122 @@ resource "aws_ecs_service" "worker" {
   tags = local.tags
 }
 
+resource "aws_ecs_task_definition" "dlq_replay" {
+  family                   = "${local.name_prefix}-dlq-replay"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = tostring(var.worker_cpu)
+  memory                   = tostring(var.worker_memory)
+  execution_role_arn       = aws_iam_role.task_execution.arn
+  task_role_arn            = aws_iam_role.worker_task.arn
+
+  runtime_platform {
+    cpu_architecture        = "ARM64"
+    operating_system_family = "LINUX"
+  }
+
+  container_definitions = jsonencode([
+    {
+      name      = "dlq-replay"
+      image     = var.worker_image
+      essential = true
+      command   = ["node", "scripts/replay-dlq.mjs"]
+
+      readonlyRootFilesystem = true
+      user                   = "1000:1000"
+
+      linuxParameters = {
+        initProcessEnabled = true
+        capabilities = {
+          drop = ["ALL"]
+        }
+      }
+
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.worker.name
+          awslogs-region        = var.aws_region
+          awslogs-stream-prefix = "dlq-replay"
+        }
+      }
+
+      environment = [
+        { name = "REDIS_URL", value = local.redis_url },
+        { name = "JOB_QUEUE_NAME", value = var.job_queue_name },
+        { name = "DLQ_QUEUE_NAME", value = var.dlq_queue_name },
+        { name = "QUEUE_JOB_ATTEMPTS", value = tostring(var.queue_job_attempts) },
+        { name = "QUEUE_RETRY_BACKOFF_MS", value = tostring(var.queue_retry_backoff_ms) },
+        { name = "JOB_TTL_SECONDS", value = tostring(var.job_ttl_seconds) }
+      ]
+    }
+  ])
+
+  tags = local.tags
+}
+
+resource "aws_iam_role" "events_invoke_ecs" {
+  name               = "${local.name_prefix}-events-ecs-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Principal = {
+          Service = "events.amazonaws.com"
+        },
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+  tags = local.tags
+}
+
+resource "aws_iam_role_policy" "events_invoke_ecs" {
+  name = "${local.name_prefix}-events-ecs-policy"
+  role = aws_iam_role.events_invoke_ecs.id
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect   = "Allow",
+        Action   = ["ecs:RunTask"],
+        Resource = [aws_ecs_task_definition.dlq_replay.arn]
+      },
+      {
+        Effect   = "Allow",
+        Action   = ["iam:PassRole"],
+        Resource = [aws_iam_role.task_execution.arn, aws_iam_role.worker_task.arn]
+      }
+    ]
+  })
+}
+
+resource "aws_cloudwatch_event_rule" "dlq_replay" {
+  name                = "${local.name_prefix}-dlq-replay"
+  schedule_expression = var.dlq_replay_schedule_expression
+  tags                = local.tags
+}
+
+resource "aws_cloudwatch_event_target" "dlq_replay" {
+  rule     = aws_cloudwatch_event_rule.dlq_replay.name
+  role_arn = aws_iam_role.events_invoke_ecs.arn
+  arn      = aws_ecs_cluster.this.arn
+
+  ecs_target {
+    task_count          = 1
+    task_definition_arn = aws_ecs_task_definition.dlq_replay.arn
+    launch_type         = "FARGATE"
+
+    network_configuration {
+      subnets          = local.private_subnet_ids
+      security_groups  = [aws_security_group.worker.id]
+      assign_public_ip = var.worker_assign_public_ip
+    }
+  }
+}
+
 resource "aws_appautoscaling_target" "worker" {
   max_capacity       = var.worker_max_capacity
   min_capacity       = var.worker_min_capacity

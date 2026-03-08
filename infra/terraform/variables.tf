@@ -295,6 +295,12 @@ variable "dlq_queue_name" {
   default     = "code-jobs-dlq"
 }
 
+variable "dlq_replay_schedule_expression" {
+  description = "EventBridge schedule expression for DLQ replay task"
+  type        = string
+  default     = "rate(6 hours)"
+}
+
 variable "node_options" {
   description = "Node.js runtime options for V8 tuning"
   type        = string
