@@ -380,9 +380,9 @@ resource "aws_iam_role_policy" "api_admin_ecs" {
         Resource = "*"
       },
       {
-        Sid      = "AllowDescribeAutoScaling",
-        Effect   = "Allow",
-        Action   = [
+        Sid    = "AllowDescribeAutoScaling",
+        Effect = "Allow",
+        Action = [
           "application-autoscaling:DescribeScalingPolicies",
           "application-autoscaling:DescribeScalingActivities",
           "application-autoscaling:DescribeScalableTargets"
@@ -790,7 +790,7 @@ resource "aws_ecs_service" "worker" {
   }
 
   depends_on = [aws_ecs_cluster_capacity_providers.this]
-  tags = local.tags
+  tags       = local.tags
 }
 
 resource "aws_ecs_task_definition" "dlq_replay" {
@@ -848,7 +848,7 @@ resource "aws_ecs_task_definition" "dlq_replay" {
 }
 
 resource "aws_iam_role" "events_invoke_ecs" {
-  name               = "${local.name_prefix}-events-ecs-role"
+  name = "${local.name_prefix}-events-ecs-role"
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
@@ -942,7 +942,7 @@ resource "aws_appautoscaling_target" "worker" {
 }
 
 resource "aws_appautoscaling_policy" "worker_queue_depth" {
-  name               = "${local.name_prefix}-worker-queue-depth"
+  name               = "${local.name_prefix}-worker-queue-depth-v2"
   policy_type        = "TargetTrackingScaling"
   resource_id        = aws_appautoscaling_target.worker.resource_id
   scalable_dimension = aws_appautoscaling_target.worker.scalable_dimension
@@ -956,7 +956,7 @@ resource "aws_appautoscaling_policy" "worker_queue_depth" {
     customized_metric_specification {
       metric_name = var.queue_depth_scale_metric_name
       namespace   = var.queue_depth_metric_namespace
-      statistic   = "Average"
+      statistic   = "Maximum"
       unit        = "Count"
 
       dimensions {
@@ -970,4 +970,86 @@ resource "aws_appautoscaling_policy" "worker_queue_depth" {
       }
     }
   }
+}
+
+resource "aws_appautoscaling_policy" "worker_scale_from_zero" {
+  name               = "${local.name_prefix}-worker-scale-from-zero"
+  policy_type        = "StepScaling"
+  resource_id        = aws_appautoscaling_target.worker.resource_id
+  scalable_dimension = aws_appautoscaling_target.worker.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.worker.service_namespace
+
+  step_scaling_policy_configuration {
+    adjustment_type         = "ExactCapacity"
+    cooldown                = var.worker_scale_from_zero_cooldown_seconds
+    metric_aggregation_type = "Maximum"
+
+    step_adjustment {
+      metric_interval_lower_bound = 0
+      scaling_adjustment          = 1
+    }
+  }
+}
+
+resource "aws_appautoscaling_policy" "worker_scale_to_zero" {
+  name               = "${local.name_prefix}-worker-scale-to-zero"
+  policy_type        = "StepScaling"
+  resource_id        = aws_appautoscaling_target.worker.resource_id
+  scalable_dimension = aws_appautoscaling_target.worker.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.worker.service_namespace
+
+  step_scaling_policy_configuration {
+    adjustment_type         = "ExactCapacity"
+    cooldown                = var.worker_scale_to_zero_cooldown_seconds
+    metric_aggregation_type = "Average"
+
+    step_adjustment {
+      metric_interval_upper_bound = 0
+      scaling_adjustment          = 0
+    }
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "worker_queue_nonempty" {
+  alarm_name          = "${local.name_prefix}-worker-queue-nonempty"
+  alarm_description   = "Wake worker desired count to one when queue has pending jobs."
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = var.worker_nonempty_queue_evaluation_periods
+  metric_name         = var.queue_depth_scale_metric_name
+  namespace           = var.queue_depth_metric_namespace
+  period              = var.worker_nonempty_queue_period_seconds
+  statistic           = "Maximum"
+  threshold           = var.worker_nonempty_queue_threshold
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    QueueName = var.job_queue_name
+    Service   = local.worker_service_name
+  }
+
+  alarm_actions = [aws_appautoscaling_policy.worker_scale_from_zero.arn]
+
+  tags = local.tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "worker_queue_empty" {
+  alarm_name          = "${local.name_prefix}-worker-queue-empty"
+  alarm_description   = "Force worker desired count to zero when queue stays empty."
+  comparison_operator = "LessThanOrEqualToThreshold"
+  evaluation_periods  = var.worker_empty_queue_evaluation_periods
+  metric_name         = var.queue_depth_scale_metric_name
+  namespace           = var.queue_depth_metric_namespace
+  period              = var.worker_empty_queue_period_seconds
+  statistic           = "Maximum"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    QueueName = var.job_queue_name
+    Service   = local.worker_service_name
+  }
+
+  alarm_actions = [aws_appautoscaling_policy.worker_scale_to_zero.arn]
+
+  tags = local.tags
 }

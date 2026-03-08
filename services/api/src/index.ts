@@ -847,7 +847,10 @@ app.get("/v1/admin/metrics", async (request, reply) => {
         )
       ]);
 
-      const policy = policies.ScalingPolicies?.[0];
+      const scalingPolicies = policies.ScalingPolicies ?? [];
+      const policy =
+        scalingPolicies.find((candidate) => candidate.PolicyType === "TargetTrackingScaling") ??
+        scalingPolicies[0];
       const target = targets.ScalableTargets?.[0];
       const recentActivities = (activities.ScalingActivities ?? []).map((activity) => ({
         statusCode: activity.StatusCode ?? null,

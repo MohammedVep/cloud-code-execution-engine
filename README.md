@@ -319,6 +319,13 @@ Auth/rate-limit vars (optional):
 - `worker_min_capacity`, `worker_max_capacity`
 - `worker_queue_depth_target`
 - `queue_depth_metric_namespace`, `queue_depth_metric_name`, `queue_depth_publish_interval_ms`
+- `worker_scale_to_zero_cooldown_seconds`
+- `worker_empty_queue_evaluation_periods`
+- `worker_empty_queue_period_seconds`
+- `worker_scale_from_zero_cooldown_seconds`
+- `worker_nonempty_queue_evaluation_periods`
+- `worker_nonempty_queue_period_seconds`
+- `worker_nonempty_queue_threshold`
 
 RDS vars (optional):
 

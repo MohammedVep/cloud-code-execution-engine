@@ -9,6 +9,12 @@
   - scale out when queue depth exceeds target
   - scale in toward zero when queue drains
 - API publishes queue depth metrics so scale-from-zero can occur even with zero workers.
+- Explicit empty-queue safety policy:
+  - CloudWatch alarm on `CCEE/PendingJobsScaleSignal <= 0`
+  - Step scaling policy forces exact desired count `0` after sustained empty periods.
+- Explicit wake-up safety policy:
+  - CloudWatch alarm on `CCEE/PendingJobsScaleSignal > 0`
+  - Step scaling policy forces exact desired count `1` so scale-from-zero recovers quickly.
 
 ## Key Metrics
 - Jobs submitted per minute

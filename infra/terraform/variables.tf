@@ -331,6 +331,48 @@ variable "worker_queue_depth_target" {
   default     = 25
 }
 
+variable "worker_scale_to_zero_cooldown_seconds" {
+  description = "Cooldown (seconds) for explicit empty-queue scale-to-zero policy"
+  type        = number
+  default     = 120
+}
+
+variable "worker_empty_queue_evaluation_periods" {
+  description = "Number of periods queue must remain empty before forcing desired count to zero"
+  type        = number
+  default     = 5
+}
+
+variable "worker_empty_queue_period_seconds" {
+  description = "Period length (seconds) for empty queue scale-to-zero alarm"
+  type        = number
+  default     = 60
+}
+
+variable "worker_scale_from_zero_cooldown_seconds" {
+  description = "Cooldown (seconds) for non-empty queue wake-up policy"
+  type        = number
+  default     = 60
+}
+
+variable "worker_nonempty_queue_evaluation_periods" {
+  description = "Number of periods queue must stay non-empty before forcing desired count to 1"
+  type        = number
+  default     = 1
+}
+
+variable "worker_nonempty_queue_period_seconds" {
+  description = "Period length (seconds) for non-empty queue wake-up alarm"
+  type        = number
+  default     = 60
+}
+
+variable "worker_nonempty_queue_threshold" {
+  description = "Threshold for non-empty queue wake-up alarm"
+  type        = number
+  default     = 0
+}
+
 variable "analysis_max_source_chars" {
   description = "Maximum source length retained for analysis generation"
   type        = number
