@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { CloudWatchClient, PutMetricDataCommand } from "@aws-sdk/client-cloudwatch";
 import {
   SUPPORTED_LANGUAGES,
   classifyFailureCategory,
@@ -107,6 +108,7 @@ const redisConnection = {
 
 const redis = new Redis(redisConnection);
 const queue = new Queue(config.JOB_QUEUE_NAME, { connection: redisConnection });
+const cloudWatchClient = new CloudWatchClient({ region: config.AWS_REGION });
 const publicRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "public");
 const jwtJwks = config.JWT_JWKS_URL ? createRemoteJWKSet(new URL(config.JWT_JWKS_URL)) : null;
 
@@ -137,6 +139,52 @@ const parseJson = <T>(value: string | undefined): T | null => {
     return null;
   }
 };
+
+const publishQueueDepthMetric = async (): Promise<void> => {
+  try {
+    const counts = await queue.getJobCounts(
+      "waiting",
+      "active",
+      "delayed",
+      "paused",
+      "prioritized",
+      "waiting-children"
+    );
+    const pending =
+      (counts.waiting ?? 0) +
+      (counts.active ?? 0) +
+      (counts.delayed ?? 0) +
+      (counts.paused ?? 0) +
+      (counts.prioritized ?? 0) +
+      (counts["waiting-children"] ?? 0);
+
+    await cloudWatchClient.send(
+      new PutMetricDataCommand({
+        Namespace: config.QUEUE_DEPTH_METRIC_NAMESPACE,
+        MetricData: [
+          {
+            MetricName: config.QUEUE_DEPTH_METRIC_NAME,
+            Dimensions: [
+              { Name: "QueueName", Value: config.JOB_QUEUE_NAME },
+              { Name: "Service", Value: config.QUEUE_DEPTH_METRIC_SERVICE_NAME }
+            ],
+            Unit: "Count",
+            Value: pending
+          }
+        ]
+      })
+    );
+  } catch (error) {
+    console.error("queue_depth_metric_publish_failed", error);
+  }
+};
+
+const queueMetricTimer = setInterval(() => {
+  void publishQueueDepthMetric();
+}, config.QUEUE_DEPTH_PUBLISH_INTERVAL_MS);
+
+queueMetricTimer.unref?.();
+void publishQueueDepthMetric();
 
 const parseExecutionResult = (value: string | undefined) => {
   const decoded = parseJson<unknown>(value);

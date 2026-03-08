@@ -2,6 +2,7 @@ import { z } from "zod";
 
 const envSchema = z.object({
   API_PORT: z.coerce.number().int().positive().default(8080),
+  AWS_REGION: z.string().min(1).default("us-east-1"),
   REDIS_URL: z.string().url().default("redis://localhost:6379"),
   AUTH_MODE: z.enum(["api_key", "jwt", "hybrid"]).default("api_key"),
   JWT_JWKS_URL: z.preprocess(
@@ -34,6 +35,10 @@ const envSchema = z.object({
   QUEUE_RETRY_BACKOFF_MS: z.coerce.number().int().positive().max(60_000).default(1_000),
   ANALYSIS_MAX_SOURCE_CHARS: z.coerce.number().int().positive().max(50_000).default(8_000),
   QUEUE_DEPTH_TARGET: z.coerce.number().int().positive().max(10_000).default(25),
+  QUEUE_DEPTH_METRIC_NAMESPACE: z.string().min(1).default("CCEE"),
+  QUEUE_DEPTH_METRIC_NAME: z.string().min(1).default("PendingJobsCount"),
+  QUEUE_DEPTH_PUBLISH_INTERVAL_MS: z.coerce.number().int().min(5_000).max(300_000).default(30_000),
+  QUEUE_DEPTH_METRIC_SERVICE_NAME: z.string().min(1).default("ccee-worker"),
   AI_PROVIDER: z.enum(["none", "openai"]).default("none"),
   OPENAI_API_KEY: z.preprocess(
     (value) => (typeof value === "string" && value.trim().length === 0 ? undefined : value),

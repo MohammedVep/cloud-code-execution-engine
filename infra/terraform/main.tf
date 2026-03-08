@@ -333,6 +333,28 @@ resource "aws_iam_role" "api_task" {
   tags               = local.tags
 }
 
+resource "aws_iam_role_policy" "api_metrics" {
+  name = "${local.name_prefix}-api-metrics"
+  role = aws_iam_role.api_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Sid      = "AllowPutQueueDepthMetric",
+        Effect   = "Allow",
+        Action   = ["cloudwatch:PutMetricData"],
+        Resource = "*",
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = var.queue_depth_metric_namespace
+          }
+        }
+      }
+    ]
+  })
+}
+
 resource "aws_iam_role" "worker_task" {
   name               = "${local.name_prefix}-worker-task-role"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume_role.json
@@ -490,6 +512,7 @@ resource "aws_ecs_task_definition" "api" {
 
       environment = [
         { name = "API_PORT", value = "8080" },
+        { name = "AWS_REGION", value = var.aws_region },
         { name = "REDIS_URL", value = local.redis_url },
         { name = "AUTH_MODE", value = var.auth_mode },
         { name = "JWT_JWKS_URL", value = var.jwt_jwks_url },
@@ -512,6 +535,10 @@ resource "aws_ecs_task_definition" "api" {
         { name = "QUEUE_JOB_ATTEMPTS", value = tostring(var.queue_job_attempts) },
         { name = "QUEUE_RETRY_BACKOFF_MS", value = tostring(var.queue_retry_backoff_ms) },
         { name = "QUEUE_DEPTH_TARGET", value = tostring(var.worker_queue_depth_target) },
+        { name = "QUEUE_DEPTH_METRIC_NAMESPACE", value = var.queue_depth_metric_namespace },
+        { name = "QUEUE_DEPTH_METRIC_NAME", value = var.queue_depth_metric_name },
+        { name = "QUEUE_DEPTH_PUBLISH_INTERVAL_MS", value = tostring(var.queue_depth_publish_interval_ms) },
+        { name = "QUEUE_DEPTH_METRIC_SERVICE_NAME", value = local.worker_service_name },
         { name = "ANALYSIS_MAX_SOURCE_CHARS", value = tostring(var.analysis_max_source_chars) },
         { name = "AI_PROVIDER", value = var.ai_provider },
         { name = "OPENAI_MODEL", value = var.openai_model },
