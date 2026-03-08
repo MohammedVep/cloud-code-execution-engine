@@ -523,26 +523,26 @@
           <div class="stats">
             <div class="stat">
               <strong>ECS Fargate</strong>
-              <span>Ephemeral task-per-job isolation</span>
+              <span>Firecracker microVM isolation per run</span>
             </div>
             <div class="stat">
               <strong>BullMQ + Redis</strong>
-              <span>Async dispatch and state lifecycle</span>
+              <span>Queue depth drives autoscaling</span>
             </div>
             <div class="stat">
               <strong>Tenant Controls</strong>
-              <span>API keys, quotas, and audit stream</span>
+              <span>API keys, quotas, and audit trail</span>
             </div>
           </div>
         </article>
         <aside class="hero-aside panel reveal delay-2">
           <div class="signal">
             <h3>Security Signals</h3>
-            <p>Read-only filesystems, dropped capabilities, no-new-privileges, bounded process execution.</p>
+            <p>Firecracker microVM isolation, read-only filesystems, dropped capabilities, no-new-privileges, bounded process execution.</p>
           </div>
           <div class="signal">
             <h3>Infrastructure Signals</h3>
-            <p>ALB + ECS services + ElastiCache + queue-depth CloudWatch alarms that autoscale worker capacity.</p>
+            <p>Private subnets + VPC endpoints keep workers off public IPs. PendingJobsCount metrics drive ECS auto-scaling.</p>
           </div>
           <div class="signal">
             <h3>Recruiter Lens</h3>
@@ -561,7 +561,7 @@
             </div>
             <div class="card">
               <h4>2. Queue Worker</h4>
-              <p>Consumes queued jobs and dispatches hardened runner tasks locally or to ECS/Fargate.</p>
+              <p>Consumes queued jobs, publishes PendingJobsCount metrics, and dispatches hardened runner tasks to ECS/Fargate.</p>
             </div>
             <div class="card">
               <h4>3. Sandbox Runner</h4>
@@ -588,7 +588,7 @@
               <div class="step-badge">2</div>
               <div>
                 <strong>Queue</strong>
-                <p>Job enters BullMQ queue and transitions to running/dispatched states.</p>
+                <p>Job enters BullMQ queue; queue depth metrics inform auto-scaling.</p>
               </div>
             </div>
             <div class="step">
