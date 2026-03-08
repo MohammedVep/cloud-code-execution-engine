@@ -301,6 +301,12 @@ variable "dlq_replay_schedule_expression" {
   default     = "rate(6 hours)"
 }
 
+variable "dlq_replay_offpeak_schedule_expression" {
+  description = "EventBridge cron expression for off-peak DLQ replay (UTC)"
+  type        = string
+  default     = "cron(0 7 * * ? *)"
+}
+
 variable "node_options" {
   description = "Node.js runtime options for V8 tuning"
   type        = string

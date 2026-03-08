@@ -857,6 +857,30 @@ resource "aws_cloudwatch_event_target" "dlq_replay" {
   }
 }
 
+resource "aws_cloudwatch_event_rule" "dlq_replay_offpeak" {
+  name                = "${local.name_prefix}-dlq-replay-offpeak"
+  schedule_expression = var.dlq_replay_offpeak_schedule_expression
+  tags                = local.tags
+}
+
+resource "aws_cloudwatch_event_target" "dlq_replay_offpeak" {
+  rule     = aws_cloudwatch_event_rule.dlq_replay_offpeak.name
+  role_arn = aws_iam_role.events_invoke_ecs.arn
+  arn      = aws_ecs_cluster.this.arn
+
+  ecs_target {
+    task_count          = 1
+    task_definition_arn = aws_ecs_task_definition.dlq_replay.arn
+    launch_type         = "FARGATE"
+
+    network_configuration {
+      subnets          = local.private_subnet_ids
+      security_groups  = [aws_security_group.worker.id]
+      assign_public_ip = var.worker_assign_public_ip
+    }
+  }
+}
+
 resource "aws_appautoscaling_target" "worker" {
   max_capacity       = var.worker_max_capacity
   min_capacity       = var.worker_min_capacity

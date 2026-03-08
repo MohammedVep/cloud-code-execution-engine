@@ -121,6 +121,28 @@ sequenceDiagram
 - Worker ECS service runs in private subnets with `assign_public_ip = false`; runner tasks remain ephemeral per execution.
 - DLQ recovery: `REDIS_URL=... npm run queue:recover` replays dead-lettered jobs into the main queue.
 
+## 🛠 Operational Runbook: DLQ Recovery
+
+Failed code execution payloads are automatically routed to the Redis Dead Letter Queue and processed daily via an EventBridge cron schedule at 02:00 AM local time (scheduled in UTC).
+
+**Manual Override (Break-Glass Command):**
+To manually trigger the DLQ recovery script outside the scheduled maintenance window, run the following transient Fargate task via the AWS CLI:
+
+```bash
+CLUSTER=ccee-cluster
+TASK_DEF=ccee-dlq-replay
+SUBNETS=$(terraform -chdir=infra/terraform output -json private_subnet_ids | python -c 'import json,sys;print(",".join(json.load(sys.stdin)))')
+SG=$(aws ec2 describe-security-groups --filters Name=group-name,Values=ccee-worker-sg --query 'SecurityGroups[0].GroupId' --output text)
+
+aws ecs run-task \
+  --cluster "$CLUSTER" \
+  --task-definition "$TASK_DEF" \
+  --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=DISABLED}" \
+  --overrides '{"containerOverrides": [{"name": "dlq-replay", "command": ["node", "scripts/replay-dlq.mjs"]}]}' \
+  --count 1
+```
+
 ### How abuse is prevented
 
 - Separate API controls for read traffic and submit traffic:
