@@ -119,6 +119,7 @@ sequenceDiagram
   - scale out when queue depth exceeds the target
   - scale in toward zero as the queue drains
 - Worker ECS service runs in private subnets with `assign_public_ip = false`; runner tasks remain ephemeral per execution.
+- DLQ recovery: `REDIS_URL=... npm run queue:recover` replays dead-lettered jobs into the main queue.
 
 ### How abuse is prevented
 

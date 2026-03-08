@@ -11,6 +11,7 @@
     "dev:api": "npm run dev --workspace @ccee/api",
     "dev:worker": "npm run dev --workspace @ccee/worker",
     "dev:runner": "npm run dev --workspace @ccee/runner",
+    "queue:recover": "node scripts/replay-dlq.mjs",
     "lint": "npm run lint --workspaces --if-present",
     "test": "npm run test --workspaces --if-present"
   },
