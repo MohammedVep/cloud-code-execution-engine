@@ -4,6 +4,7 @@ WORKDIR /app
 COPY package*.json ./
 COPY tsconfig.base.json ./
 COPY packages/common ./packages/common
+COPY scripts/replay-dlq.mjs ./scripts/replay-dlq.mjs
 COPY services/worker ./services/worker
 
 RUN npm install
@@ -17,6 +18,7 @@ RUN apk add --no-cache docker-cli
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/packages/common/dist ./packages/common/dist
 COPY --from=builder /app/packages/common/package.json ./packages/common/package.json
+COPY --from=builder /app/scripts ./scripts
 COPY --from=builder /app/services/worker/dist ./services/worker/dist
 COPY --from=builder /app/services/worker/package.json ./services/worker/package.json
 

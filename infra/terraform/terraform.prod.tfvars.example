@@ -1,0 +1,42 @@
+aws_region = "us-east-1"
+
+vpc_id = "vpc-0ae2e116009b7ccbc"
+
+public_subnet_ids = [
+  "subnet-014f59a6bf5289692",
+  "subnet-029f0acc07b9d0734",
+  "subnet-08b39c81278830c4e",
+  "subnet-0d3e3d2646ff6e392",
+  "subnet-0d60ceb31cad8cdb6",
+  "subnet-0db40aec5f58ae1cf",
+]
+
+private_subnet_ids = [
+  "subnet-014f59a6bf5289692",
+  "subnet-029f0acc07b9d0734",
+  "subnet-08b39c81278830c4e",
+  "subnet-0d3e3d2646ff6e392",
+  "subnet-0d60ceb31cad8cdb6",
+  "subnet-0db40aec5f58ae1cf",
+]
+
+api_image    = "194191749520.dkr.ecr.us-east-1.amazonaws.com/ccee-api:20260308-smokefix3"
+worker_image = "194191749520.dkr.ecr.us-east-1.amazonaws.com/ccee-worker:20260403094526-replayfix"
+runner_image = "194191749520.dkr.ecr.us-east-1.amazonaws.com/ccee-runner:20260308-0930-autoscale"
+
+api_cpu    = 256
+api_memory = 512
+
+worker_cpu           = 512
+worker_memory        = 1024
+worker_desired_count = 0
+
+runner_cpu    = 512
+runner_memory = 1024
+
+worker_assign_public_ip = true
+enable_vpc_endpoints    = false
+
+# Keep these in an untracked local tfvars file for real applies.
+tenant_api_keys_json = "{\"dev-local-key\":{\"tenantId\":\"tenant-dev\",\"maxConcurrentJobs\":5,\"maxDailyJobs\":1000}}"
+admin_api_keys_json  = "[\"dev-local-key\"]"

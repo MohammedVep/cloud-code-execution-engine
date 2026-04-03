@@ -1,0 +1,6 @@
+bucket         = "netpulse-terraform-state-194191749520-us-east-1"
+key            = "infra/aws/ccee/prod.tfstate"
+region         = "us-east-1"
+dynamodb_table = "netpulse-terraform-locks"
+encrypt        = true
+profile        = "netpulse-root"

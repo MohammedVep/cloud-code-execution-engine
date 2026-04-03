@@ -547,9 +547,14 @@ resource "aws_ecs_task_definition" "api" {
       linuxParameters = {
         initProcessEnabled = true
         capabilities = {
+          add  = []
           drop = ["ALL"]
         }
       }
+
+      mountPoints    = []
+      systemControls = []
+      volumesFrom    = []
 
       logConfiguration = {
         logDriver = "awslogs"
@@ -644,9 +649,15 @@ resource "aws_ecs_task_definition" "worker" {
       linuxParameters = {
         initProcessEnabled = true
         capabilities = {
+          add  = []
           drop = ["ALL"]
         }
       }
+
+      mountPoints    = []
+      portMappings   = []
+      systemControls = []
+      volumesFrom    = []
 
       logConfiguration = {
         logDriver = "awslogs"
@@ -718,9 +729,15 @@ resource "aws_ecs_task_definition" "runner" {
       linuxParameters = {
         initProcessEnabled = true
         capabilities = {
+          add  = []
           drop = ["ALL"]
         }
       }
+
+      mountPoints    = []
+      portMappings   = []
+      systemControls = []
+      volumesFrom    = []
 
       logConfiguration = {
         logDriver = "awslogs"
@@ -791,6 +808,10 @@ resource "aws_ecs_service" "worker" {
 
   depends_on = [aws_ecs_cluster_capacity_providers.this]
   tags       = local.tags
+
+  lifecycle {
+    ignore_changes = [desired_count]
+  }
 }
 
 resource "aws_ecs_task_definition" "dlq_replay" {
@@ -820,9 +841,15 @@ resource "aws_ecs_task_definition" "dlq_replay" {
       linuxParameters = {
         initProcessEnabled = true
         capabilities = {
+          add  = []
           drop = ["ALL"]
         }
       }
+
+      mountPoints    = []
+      portMappings   = []
+      systemControls = []
+      volumesFrom    = []
 
       logConfiguration = {
         logDriver = "awslogs"

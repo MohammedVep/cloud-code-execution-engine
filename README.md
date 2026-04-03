@@ -118,7 +118,7 @@ sequenceDiagram
 - Terraform provisions ECS Application Auto Scaling with target tracking:
   - scale out when queue depth exceeds the target
   - scale in toward zero as the queue drains
-- Worker ECS service runs in private subnets with `assign_public_ip = false`; runner tasks remain ephemeral per execution.
+- Worker ECS service uses public subnet placement with `assign_public_ip = true`, while inbound remains closed on the worker and runner security groups. Runner tasks remain ephemeral per execution.
 - DLQ recovery: `REDIS_URL=... npm run queue:recover` replays dead-lettered jobs into the main queue.
 
 ## 🛠 Operational Runbook: DLQ Recovery
@@ -138,7 +138,7 @@ aws ecs run-task \
   --cluster "$CLUSTER" \
   --task-definition "$TASK_DEF" \
   --launch-type FARGATE \
-  --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=DISABLED}" \
+  --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=ENABLED}" \
   --overrides '{"containerOverrides": [{"name": "dlq-replay", "command": ["node", "scripts/replay-dlq.mjs"]}]}' \
   --count 1
 ```
@@ -337,11 +337,12 @@ Example:
 
 ```bash
 cd infra/terraform
-terraform init
-terraform apply \
-  -var 'api_image=<account>.dkr.ecr.<region>.amazonaws.com/ccee-api:latest' \
-  -var 'worker_image=<account>.dkr.ecr.<region>.amazonaws.com/ccee-worker:latest' \
-  -var 'runner_image=<account>.dkr.ecr.<region>.amazonaws.com/ccee-runner:latest'
+cp backend.prod.hcl.example backend.prod.hcl
+cp terraform.prod.tfvars.example terraform.prod.tfvars
+
+terraform init -backend-config=backend.prod.hcl
+terraform plan -var-file=terraform.prod.tfvars
+terraform apply -var-file=terraform.prod.tfvars
 ```
 
 To create a fresh VPC + subnets:
@@ -359,4 +360,5 @@ For production hardening:
 
 - set `redis_auth_token`
 - inject tenant API keys and secrets from a secret manager, not plain env vars
-- keep API/worker in private subnets behind proper ingress controls
+- use a remote backend instead of local `terraform.tfstate`
+- if you move worker and replay tasks back to private subnets, add NAT or the required VPC endpoints before setting `worker_assign_public_ip = false`
