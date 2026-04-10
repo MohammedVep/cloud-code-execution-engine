@@ -26,13 +26,22 @@ runner_image = "194191749520.dkr.ecr.us-east-1.amazonaws.com/ccee-runner:2026030
 
 api_cpu    = 256
 api_memory = 512
+log_retention_days = 7
 
 worker_cpu           = 512
 worker_memory        = 1024
 worker_desired_count = 0
 
-runner_cpu    = 512
-runner_memory = 1024
+runner_cpu            = 512
+runner_memory         = 1024
+runner_small_cpu      = 256
+runner_small_memory   = 512
+runner_medium_cpu     = 512
+runner_medium_memory  = 1024
+runner_large_cpu      = 1024
+runner_large_memory   = 2048
+runner_spot_enabled   = true
+runner_on_demand_fallback_enabled = true
 
 worker_assign_public_ip = true
 enable_vpc_endpoints    = false

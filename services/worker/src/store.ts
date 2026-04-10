@@ -2,10 +2,13 @@ import {
   classifyFailureCategory,
   estimateExecutionCostUsd,
   nowIso,
+  resolveCostModelVersion,
   tenantDailyCostKey,
   tenantActiveJobsKey,
   type ExecutionResult,
-  redisJobKey
+  redisJobKey,
+  type RunnerComputeTier,
+  type RunnerPurchaseOption
 } from "@ccee/common";
 import type { Redis } from "ioredis";
 
@@ -128,7 +131,12 @@ export const markDispatched = async (
   redis: Redis,
   jobId: string,
   tenantId: string,
-  taskArn: string,
+  dispatch: {
+    taskArn: string;
+    taskDefinitionArn?: string;
+    computeTier?: RunnerComputeTier;
+    purchaseOption?: RunnerPurchaseOption;
+  },
   ttlSeconds: number,
   auditStreamKey: string,
   traceId?: string
@@ -136,9 +144,18 @@ export const markDispatched = async (
   const timestamp = nowIso();
   const updates: Record<string, string> = {
     status: "dispatched",
-    taskArn,
+    taskArn: dispatch.taskArn,
     updatedAt: timestamp
   };
+  if (dispatch.taskDefinitionArn) {
+    updates.taskDefinitionArn = dispatch.taskDefinitionArn;
+  }
+  if (dispatch.computeTier) {
+    updates.computeTier = dispatch.computeTier;
+  }
+  if (dispatch.purchaseOption) {
+    updates.purchaseOption = dispatch.purchaseOption;
+  }
   if (traceId) {
     updates.traceId = traceId;
   }
@@ -149,7 +166,13 @@ export const markDispatched = async (
     action: "job_dispatched",
     tenantId,
     jobId,
-    metadata: { taskArn, traceId: traceId ?? null }
+    metadata: {
+      taskArn: dispatch.taskArn,
+      taskDefinitionArn: dispatch.taskDefinitionArn ?? null,
+      computeTier: dispatch.computeTier ?? null,
+      purchaseOption: dispatch.purchaseOption ?? null,
+      traceId: traceId ?? null
+    }
   });
 };
 
@@ -162,6 +185,10 @@ export const markCompleted = async (
     cpuMillicores: number;
     memoryMb: number;
   },
+  billing: {
+    computeTier?: RunnerComputeTier | null;
+    purchaseOption?: RunnerPurchaseOption | null;
+  } | null,
   ttlSeconds: number,
   auditStreamKey: string,
   releaseQuota: boolean,
@@ -171,9 +198,12 @@ export const markCompleted = async (
   const estimatedCostUsd = estimateExecutionCostUsd({
     durationMs: result.durationMs,
     cpuMillicores: request.cpuMillicores,
-    memoryMb: request.memoryMb
+    memoryMb: request.memoryMb,
+    computeTier: billing?.computeTier,
+    purchaseOption: billing?.purchaseOption
   });
   const failureCategory = classifyFailureCategory({ result });
+  const costModelVersion = resolveCostModelVersion(billing ?? {});
 
   const updates: Record<string, string> = {
     status: result.status,
@@ -181,13 +211,19 @@ export const markCompleted = async (
     estimatedCostUsd: estimatedCostUsd.toFixed(8),
     billableDurationMs: String(result.durationMs),
     failureCategory,
-    costModelVersion: "fargate-v1",
+    costModelVersion,
     currentAttempt: "",
     retryScheduledAt: "",
     completedAt: timestamp,
     updatedAt: timestamp,
     error: ""
   };
+  if (billing?.computeTier) {
+    updates.computeTier = billing.computeTier;
+  }
+  if (billing?.purchaseOption) {
+    updates.purchaseOption = billing.purchaseOption;
+  }
   if (traceId) {
     updates.traceId = traceId;
   }
@@ -209,6 +245,8 @@ export const markCompleted = async (
       durationMs: result.durationMs,
       estimatedCostUsd,
       failureCategory,
+      computeTier: billing?.computeTier ?? null,
+      purchaseOption: billing?.purchaseOption ?? null,
       traceId: traceId ?? null
     }
   });

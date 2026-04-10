@@ -60,6 +60,54 @@ export const executionAnalysisSchema = z.object({
 
 export type ExecutionAnalysis = z.infer<typeof executionAnalysisSchema>;
 
+export const RUNNER_COMPUTE_TIERS = ["small", "medium", "large"] as const;
+export type RunnerComputeTier = (typeof RUNNER_COMPUTE_TIERS)[number];
+
+export const RUNNER_PURCHASE_OPTIONS = ["spot", "on-demand"] as const;
+export type RunnerPurchaseOption = (typeof RUNNER_PURCHASE_OPTIONS)[number];
+
+const runnerTierResources = {
+  small: {
+    cpuUnits: 256,
+    memoryMb: 512
+  },
+  medium: {
+    cpuUnits: 512,
+    memoryMb: 1024
+  },
+  large: {
+    cpuUnits: 1024,
+    memoryMb: 2048
+  }
+} as const satisfies Record<RunnerComputeTier, { cpuUnits: number; memoryMb: number }>;
+
+export const getRunnerTierResources = (
+  computeTier: RunnerComputeTier
+): { cpuUnits: number; memoryMb: number } => runnerTierResources[computeTier];
+
+export const selectRunnerComputeTier = (cpuMillicores: number): RunnerComputeTier => {
+  if (cpuMillicores <= 256) {
+    return "small";
+  }
+
+  if (cpuMillicores <= 512) {
+    return "medium";
+  }
+
+  return "large";
+};
+
+export const resolveCostModelVersion = (input: {
+  computeTier?: RunnerComputeTier | null;
+  purchaseOption?: RunnerPurchaseOption | null;
+}): string => {
+  if (input.computeTier && input.purchaseOption) {
+    return "fargate-tiered-v2";
+  }
+
+  return "fargate-v1";
+};
+
 export const redisJobKey = (jobId: string): string => `job:${jobId}`;
 export const tenantActiveJobsKey = (tenantId: string): string => `tenant:${tenantId}:active_jobs`;
 export const tenantDailyJobsKey = (tenantId: string, dateKey: string): string =>
@@ -74,16 +122,24 @@ export const tenantSubmitRateLimitKey = (tenantId: string, windowKey: string): s
 
 export const estimateExecutionCostUsd = (input: {
   durationMs: number;
-  cpuMillicores: number;
-  memoryMb: number;
+  cpuMillicores?: number;
+  memoryMb?: number;
+  computeTier?: RunnerComputeTier | null;
+  purchaseOption?: RunnerPurchaseOption | null;
 }): number => {
   const durationHours = Math.max(0, input.durationMs) / (1000 * 60 * 60);
-  const vCpu = Math.max(input.cpuMillicores, 128) / 1000;
-  const memoryGb = Math.max(input.memoryMb, 64) / 1024;
+  const tierResources = input.computeTier ? getRunnerTierResources(input.computeTier) : null;
+  const vCpu = tierResources
+    ? tierResources.cpuUnits / 1024
+    : Math.max(input.cpuMillicores ?? 128, 128) / 1000;
+  const memoryGb = tierResources
+    ? tierResources.memoryMb / 1024
+    : Math.max(input.memoryMb ?? 64, 64) / 1024;
   const cpuHourRate = 0.04048;
   const memoryGbHourRate = 0.004445;
+  const purchaseMultiplier = input.purchaseOption === "spot" ? 0.3 : 1;
 
-  const estimated = durationHours * (vCpu * cpuHourRate + memoryGb * memoryGbHourRate);
+  const estimated = durationHours * (vCpu * cpuHourRate + memoryGb * memoryGbHourRate) * purchaseMultiplier;
   return Number(estimated.toFixed(8));
 };
 

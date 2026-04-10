@@ -4,6 +4,11 @@
 - Asynchronous queue (`BullMQ`) between API and workers.
 - Worker concurrency controlled by `WORKER_CONCURRENCY`.
 - ECS deployment supports horizontal worker replicas on Fargate Spot.
+- ECS runner dispatch prefers Fargate Spot and retries once on on-demand Fargate when Spot capacity is unavailable.
+- Runner task definitions are tiered for cost control:
+  - `small`: `256 CPU / 512 MiB`
+  - `medium`: `512 CPU / 1024 MiB`
+  - `large`: `1024 CPU / 2048 MiB`
 - Queue depth metrics published to CloudWatch (`CCEE/PendingJobsCount`).
 - ECS Application Auto Scaling with target tracking:
   - scale out when queue depth exceeds target

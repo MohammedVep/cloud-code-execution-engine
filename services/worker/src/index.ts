@@ -104,6 +104,7 @@ const worker = new Worker(
           cpuMillicores: payload.request.cpuMillicores,
           memoryMb: payload.request.memoryMb
         },
+        null,
         config.jobTtlSeconds,
         config.auditStreamKey,
         true,
@@ -112,18 +113,18 @@ const worker = new Worker(
       return result;
     }
 
-    const taskArn = await dispatchEcsRunner(ecsClient, config, payload);
+    const dispatch = await dispatchEcsRunner(ecsClient, config, payload);
     await markDispatched(
       redis,
       payload.jobId,
       payload.tenant.tenantId,
-      taskArn,
+      dispatch,
       config.jobTtlSeconds,
       config.auditStreamKey,
       payload.traceId
     );
 
-    return { taskArn };
+    return dispatch;
   },
   {
     connection: redisConnection,

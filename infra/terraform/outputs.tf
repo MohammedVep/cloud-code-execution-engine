@@ -39,8 +39,17 @@ output "worker_task_definition_arn" {
 }
 
 output "runner_task_definition_arn" {
-  value       = aws_ecs_task_definition.runner.arn
-  description = "Runner ECS task definition ARN"
+  value       = aws_ecs_task_definition.runner["medium"].arn
+  description = "Medium runner ECS task definition ARN"
+}
+
+output "runner_task_definition_arns" {
+  value = {
+    small  = aws_ecs_task_definition.runner["small"].arn
+    medium = aws_ecs_task_definition.runner["medium"].arn
+    large  = aws_ecs_task_definition.runner["large"].arn
+  }
+  description = "Runner ECS task definition ARNs by compute tier"
 }
 
 output "api_service_name" {

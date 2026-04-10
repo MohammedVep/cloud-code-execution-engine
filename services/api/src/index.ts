@@ -373,7 +373,9 @@ const serializeJob = (data: Record<string, string>) => {
     billing: {
       estimatedCostUsd: Number(toFloat(data.estimatedCostUsd, 0).toFixed(8)),
       billableDurationMs: toInt(data.billableDurationMs, result?.durationMs ?? 0),
-      costModelVersion: data.costModelVersion || null
+      costModelVersion: data.costModelVersion || null,
+      computeTier: data.computeTier || null,
+      purchaseOption: data.purchaseOption || null
     },
     failureCategory: inferredFailureCategory,
     analysis: parseJson(data.analysis),

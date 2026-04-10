@@ -10,9 +10,12 @@ import {
   nowIso,
   queueJobPayloadSchema,
   redisJobKey,
+  resolveCostModelVersion,
   tenantDailyCostKey,
   tenantActiveJobsKey,
-  type ExecutionResult
+  type ExecutionResult,
+  type RunnerComputeTier,
+  type RunnerPurchaseOption
 } from "@ccee/common";
 import { Redis } from "ioredis";
 import { z } from "zod";
@@ -23,7 +26,9 @@ const envSchema = z.object({
   REDIS_URL: z.string().url().optional(),
   AUDIT_STREAM_KEY: z.string().min(1).default("audit:events"),
   MAX_STDIO_BYTES: z.coerce.number().int().positive().max(1_000_000).default(65_536),
-  RUN_ROOT: z.string().min(1).optional()
+  RUN_ROOT: z.string().min(1).optional(),
+  RUNNER_COMPUTE_TIER: z.enum(["small", "medium", "large"]).optional(),
+  RUNNER_PURCHASE_OPTION: z.enum(["spot", "on-demand"]).optional()
 });
 
 const truncate = (input: string, maxBytes: number): string => {
@@ -252,6 +257,10 @@ const persistResultToRedis = async (
   },
   result: ExecutionResult,
   auditStreamKey: string,
+  billing: {
+    computeTier?: RunnerComputeTier;
+    purchaseOption?: RunnerPurchaseOption;
+  },
   traceId?: string
 ): Promise<void> => {
   const redis = new Redis(redisUrl, { maxRetriesPerRequest: 2 });
@@ -259,9 +268,12 @@ const persistResultToRedis = async (
   const estimatedCostUsd = estimateExecutionCostUsd({
     durationMs: result.durationMs,
     cpuMillicores: request.cpuMillicores,
-    memoryMb: request.memoryMb
+    memoryMb: request.memoryMb,
+    computeTier: billing.computeTier,
+    purchaseOption: billing.purchaseOption
   });
   const failureCategory = classifyFailureCategory({ result });
+  const costModelVersion = resolveCostModelVersion(billing);
 
   const updates: Record<string, string> = {
     status: result.status,
@@ -269,13 +281,19 @@ const persistResultToRedis = async (
     estimatedCostUsd: estimatedCostUsd.toFixed(8),
     billableDurationMs: String(result.durationMs),
     failureCategory,
-    costModelVersion: "fargate-v1",
+    costModelVersion,
     currentAttempt: "",
     retryScheduledAt: "",
     completedAt: now,
     updatedAt: now,
     error: ""
   };
+  if (billing.computeTier) {
+    updates.computeTier = billing.computeTier;
+  }
+  if (billing.purchaseOption) {
+    updates.purchaseOption = billing.purchaseOption;
+  }
   if (traceId) {
     updates.traceId = traceId;
   }
@@ -316,6 +334,8 @@ const persistResultToRedis = async (
       durationMs: result.durationMs,
       estimatedCostUsd,
       failureCategory,
+      computeTier: billing.computeTier ?? null,
+      purchaseOption: billing.purchaseOption ?? null,
       traceId: traceId ?? null
     })
   );
@@ -348,6 +368,10 @@ const run = async (): Promise<void> => {
       },
       result,
       env.AUDIT_STREAM_KEY,
+      {
+        computeTier: env.RUNNER_COMPUTE_TIER,
+        purchaseOption: env.RUNNER_PURCHASE_OPTION
+      },
       payload.traceId
     );
     return;
@@ -385,6 +409,10 @@ run().catch(async (error) => {
         },
         fallback,
         env.data.AUDIT_STREAM_KEY,
+        {
+          computeTier: env.data.RUNNER_COMPUTE_TIER,
+          purchaseOption: env.data.RUNNER_PURCHASE_OPTION
+        },
         payload.traceId
       );
 

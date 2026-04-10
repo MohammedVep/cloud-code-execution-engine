@@ -91,16 +91,72 @@ variable "api_desired_count" {
   default     = 1
 }
 
+variable "log_retention_days" {
+  description = "CloudWatch log retention for API, worker, and runner log groups"
+  type        = number
+  default     = 7
+}
+
 variable "runner_cpu" {
-  description = "Runner task CPU units"
+  description = "Deprecated fallback for medium runner task CPU units"
   type        = number
   default     = 512
 }
 
 variable "runner_memory" {
-  description = "Runner task memory in MiB"
+  description = "Deprecated fallback for medium runner task memory in MiB"
   type        = number
   default     = 1024
+}
+
+variable "runner_small_cpu" {
+  description = "Small runner task CPU units"
+  type        = number
+  default     = 256
+}
+
+variable "runner_small_memory" {
+  description = "Small runner task memory in MiB"
+  type        = number
+  default     = 512
+}
+
+variable "runner_medium_cpu" {
+  description = "Medium runner task CPU units"
+  type        = number
+  default     = null
+  nullable    = true
+}
+
+variable "runner_medium_memory" {
+  description = "Medium runner task memory in MiB"
+  type        = number
+  default     = null
+  nullable    = true
+}
+
+variable "runner_large_cpu" {
+  description = "Large runner task CPU units"
+  type        = number
+  default     = 1024
+}
+
+variable "runner_large_memory" {
+  description = "Large runner task memory in MiB"
+  type        = number
+  default     = 2048
+}
+
+variable "runner_spot_enabled" {
+  description = "Whether ECS runner dispatch should prefer Fargate Spot"
+  type        = bool
+  default     = true
+}
+
+variable "runner_on_demand_fallback_enabled" {
+  description = "Whether ECS runner dispatch should retry on regular Fargate when Spot capacity is unavailable"
+  type        = bool
+  default     = true
 }
 
 variable "worker_cpu" {

@@ -118,6 +118,11 @@ sequenceDiagram
 - Terraform provisions ECS Application Auto Scaling with target tracking:
   - scale out when queue depth exceeds the target
   - scale in toward zero as the queue drains
+- Runner dispatch prefers `FARGATE_SPOT` and retries once on regular `FARGATE` when Spot capacity is unavailable.
+- Runner tasks use fixed compute tiers for cost control:
+  - `small`: `256 CPU / 512 MiB`
+  - `medium`: `512 CPU / 1024 MiB`
+  - `large`: `1024 CPU / 2048 MiB`
 - Worker ECS service uses public subnet placement with `assign_public_ip = true`, while inbound remains closed on the worker and runner security groups. Runner tasks remain ephemeral per execution.
 - DLQ recovery: `REDIS_URL=... npm run queue:recover` replays dead-lettered jobs into the main queue.
 
@@ -326,6 +331,12 @@ Auth/rate-limit vars (optional):
 - `worker_nonempty_queue_evaluation_periods`
 - `worker_nonempty_queue_period_seconds`
 - `worker_nonempty_queue_threshold`
+- `log_retention_days`
+- `runner_small_cpu`, `runner_small_memory`
+- `runner_medium_cpu`, `runner_medium_memory`
+- `runner_large_cpu`, `runner_large_memory`
+- `runner_spot_enabled`
+- `runner_on_demand_fallback_enabled`
 
 RDS vars (optional):
 
