@@ -91,16 +91,72 @@ variable "api_desired_count" {
   default     = 1
 }
 
+variable "log_retention_days" {
+  description = "CloudWatch log retention for API, worker, and runner log groups"
+  type        = number
+  default     = 7
+}
+
 variable "runner_cpu" {
-  description = "Runner task CPU units"
+  description = "Deprecated fallback for medium runner task CPU units"
   type        = number
   default     = 512
 }
 
 variable "runner_memory" {
-  description = "Runner task memory in MiB"
+  description = "Deprecated fallback for medium runner task memory in MiB"
   type        = number
   default     = 1024
+}
+
+variable "runner_small_cpu" {
+  description = "Small runner task CPU units"
+  type        = number
+  default     = 256
+}
+
+variable "runner_small_memory" {
+  description = "Small runner task memory in MiB"
+  type        = number
+  default     = 512
+}
+
+variable "runner_medium_cpu" {
+  description = "Medium runner task CPU units"
+  type        = number
+  default     = null
+  nullable    = true
+}
+
+variable "runner_medium_memory" {
+  description = "Medium runner task memory in MiB"
+  type        = number
+  default     = null
+  nullable    = true
+}
+
+variable "runner_large_cpu" {
+  description = "Large runner task CPU units"
+  type        = number
+  default     = 1024
+}
+
+variable "runner_large_memory" {
+  description = "Large runner task memory in MiB"
+  type        = number
+  default     = 2048
+}
+
+variable "runner_spot_enabled" {
+  description = "Whether ECS runner dispatch should prefer Fargate Spot"
+  type        = bool
+  default     = true
+}
+
+variable "runner_on_demand_fallback_enabled" {
+  description = "Whether ECS runner dispatch should retry on regular Fargate when Spot capacity is unavailable"
+  type        = bool
+  default     = true
 }
 
 variable "worker_cpu" {
@@ -414,6 +470,48 @@ variable "openai_api_key" {
   type        = string
   default     = ""
   sensitive   = true
+}
+
+variable "otel_enabled" {
+  description = "Enable OpenTelemetry trace export from the API service"
+  type        = bool
+  default     = false
+}
+
+variable "otel_service_name" {
+  description = "OpenTelemetry service.name for the API service"
+  type        = string
+  default     = "ccee-api"
+}
+
+variable "worker_otel_service_name" {
+  description = "OpenTelemetry service.name for the worker service"
+  type        = string
+  default     = "ccee-worker"
+}
+
+variable "otel_exporter_otlp_endpoint" {
+  description = "OTLP HTTP trace endpoint, for example http://collector:4318/v1/traces"
+  type        = string
+  default     = ""
+}
+
+variable "metrics_window_seconds" {
+  description = "Window used by API-derived Prometheus metrics"
+  type        = number
+  default     = 60
+}
+
+variable "metrics_sample_limit" {
+  description = "Maximum audit stream events scanned by API-derived metrics"
+  type        = number
+  default     = 1000
+}
+
+variable "worker_fleet_capacity" {
+  description = "Fallback worker fleet capacity used for utilization metrics when ECS describe data is unavailable"
+  type        = number
+  default     = 4
 }
 
 variable "enable_rds" {

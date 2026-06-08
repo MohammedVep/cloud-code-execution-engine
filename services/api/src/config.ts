@@ -71,6 +71,18 @@ const envSchema = z.object({
   AI_ANALYSIS_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(30_000).default(10_000),
   AI_ANALYSIS_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
   AI_ANALYSIS_RETRY_BACKOFF_MS: z.coerce.number().int().min(50).max(10_000).default(500),
+  OTEL_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
+  OTEL_SERVICE_NAME: z.string().min(1).default("ccee-api"),
+  OTEL_EXPORTER_OTLP_ENDPOINT: z.preprocess(
+    (value) => (typeof value === "string" && value.trim().length === 0 ? undefined : value),
+    z.string().url().optional()
+  ),
+  METRICS_WINDOW_SECONDS: z.coerce.number().int().min(10).max(3600).default(60),
+  METRICS_SAMPLE_LIMIT: z.coerce.number().int().min(50).max(5000).default(1000),
+  WORKER_FLEET_CAPACITY: z.coerce.number().int().positive().max(1000).default(4),
   TENANT_POLICIES_JSON: z.string().default("{}"),
   TENANT_API_KEYS_JSON: z
     .string()

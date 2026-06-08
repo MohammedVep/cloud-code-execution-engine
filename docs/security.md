@@ -20,7 +20,7 @@ Users submit untrusted source code and input. The platform must prevent sandbox 
 - CPU, memory, wall-clock timeout, process count, and file-size limits.
 - Non-root execution with dropped capabilities and `no-new-privileges`.
 - Local mode network disabled in sandbox (`--network none`).
-- Read-only filesystem patterns + bounded writable tmpfs/work dir.
+- Read-only filesystem patterns + bounded writable tmpfs/work dir. Local `/workspace` is executable so Go/C++ compiled artifacts can run; `/tmp` remains `noexec`.
 - Max stdout/stderr capture to avoid log exhaustion.
 
 ### Auditability
@@ -36,3 +36,4 @@ Users submit untrusted source code and input. The platform must prevent sandbox 
 - Add suspicious pattern detection hooks before queue admission.
 - Add policy-based syscall and import restrictions per language profile.
 - Add WAF/edge throttling in front of API ingress.
+- Add per-language seccomp/AppArmor profiles for native compiled runtimes.

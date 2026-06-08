@@ -19,6 +19,21 @@ locals {
     var.tags
   )
 
+  runner_task_sizes = {
+    small = {
+      cpu    = var.runner_small_cpu
+      memory = var.runner_small_memory
+    }
+    medium = {
+      cpu    = coalesce(var.runner_medium_cpu, var.runner_cpu)
+      memory = coalesce(var.runner_medium_memory, var.runner_memory)
+    }
+    large = {
+      cpu    = var.runner_large_cpu
+      memory = var.runner_large_memory
+    }
+  }
+
   redis_url = var.redis_auth_token == null ? "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379" : "rediss://:${urlencode(var.redis_auth_token)}@${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379"
 }
 
@@ -137,19 +152,19 @@ resource "aws_ecs_cluster_capacity_providers" "this" {
 
 resource "aws_cloudwatch_log_group" "api" {
   name              = "/ecs/${local.name_prefix}/api"
-  retention_in_days = 14
+  retention_in_days = var.log_retention_days
   tags              = local.tags
 }
 
 resource "aws_cloudwatch_log_group" "worker" {
   name              = "/ecs/${local.name_prefix}/worker"
-  retention_in_days = 14
+  retention_in_days = var.log_retention_days
   tags              = local.tags
 }
 
 resource "aws_cloudwatch_log_group" "runner" {
   name              = "/ecs/${local.name_prefix}/runner"
-  retention_in_days = 14
+  retention_in_days = var.log_retention_days
   tags              = local.tags
 }
 
@@ -609,6 +624,12 @@ resource "aws_ecs_task_definition" "api" {
         { name = "AI_ANALYSIS_RETRIES", value = tostring(var.ai_analysis_retries) },
         { name = "AI_ANALYSIS_RETRY_BACKOFF_MS", value = tostring(var.ai_analysis_retry_backoff_ms) },
         { name = "OPENAI_API_KEY", value = var.openai_api_key },
+        { name = "OTEL_ENABLED", value = tostring(var.otel_enabled) },
+        { name = "OTEL_SERVICE_NAME", value = var.otel_service_name },
+        { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = var.otel_exporter_otlp_endpoint },
+        { name = "METRICS_WINDOW_SECONDS", value = tostring(var.metrics_window_seconds) },
+        { name = "METRICS_SAMPLE_LIMIT", value = tostring(var.metrics_sample_limit) },
+        { name = "WORKER_FLEET_CAPACITY", value = tostring(var.worker_fleet_capacity) },
         { name = "TENANT_POLICIES_JSON", value = var.tenant_policies_json },
         { name = "TENANT_API_KEYS_JSON", value = var.tenant_api_keys_json }
       ]
@@ -671,11 +692,16 @@ resource "aws_ecs_task_definition" "worker" {
         { name = "EXECUTION_BACKEND", value = "ecs" },
         { name = "AWS_REGION", value = var.aws_region },
         { name = "ECS_CLUSTER_ARN", value = aws_ecs_cluster.this.arn },
-        { name = "ECS_TASK_DEFINITION_ARN", value = aws_ecs_task_definition.runner.arn },
+        { name = "ECS_TASK_DEFINITION_ARN", value = aws_ecs_task_definition.runner["medium"].arn },
+        { name = "ECS_TASK_DEFINITION_ARN_SMALL", value = aws_ecs_task_definition.runner["small"].arn },
+        { name = "ECS_TASK_DEFINITION_ARN_MEDIUM", value = aws_ecs_task_definition.runner["medium"].arn },
+        { name = "ECS_TASK_DEFINITION_ARN_LARGE", value = aws_ecs_task_definition.runner["large"].arn },
         { name = "ECS_SUBNET_IDS", value = join(",", local.private_subnet_ids) },
         { name = "ECS_SECURITY_GROUP_IDS", value = aws_security_group.runner.id },
         { name = "ECS_ASSIGN_PUBLIC_IP", value = var.worker_assign_public_ip ? "ENABLED" : "DISABLED" },
         { name = "ECS_RUNNER_CONTAINER_NAME", value = "runner" },
+        { name = "ECS_RUNNER_SPOT_ENABLED", value = tostring(var.runner_spot_enabled) },
+        { name = "ECS_RUNNER_ONDEMAND_FALLBACK_ENABLED", value = tostring(var.runner_on_demand_fallback_enabled) },
         { name = "MAX_STDIO_BYTES", value = tostring(var.max_stdio_bytes) },
         { name = "AUDIT_STREAM_KEY", value = var.audit_stream_key },
         { name = "QUEUE_DEPTH_METRIC_NAMESPACE", value = var.queue_depth_metric_namespace },
@@ -683,7 +709,10 @@ resource "aws_ecs_task_definition" "worker" {
         { name = "QUEUE_DEPTH_SCALE_METRIC_NAME", value = var.queue_depth_scale_metric_name },
         { name = "QUEUE_DEPTH_TARGET", value = tostring(var.worker_queue_depth_target) },
         { name = "QUEUE_DEPTH_PUBLISH_INTERVAL_MS", value = tostring(var.queue_depth_publish_interval_ms) },
-        { name = "QUEUE_DEPTH_METRIC_SERVICE_NAME", value = local.worker_service_name }
+        { name = "QUEUE_DEPTH_METRIC_SERVICE_NAME", value = local.worker_service_name },
+        { name = "OTEL_ENABLED", value = tostring(var.otel_enabled) },
+        { name = "OTEL_SERVICE_NAME", value = var.worker_otel_service_name },
+        { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = var.otel_exporter_otlp_endpoint }
       ]
     }
   ])
@@ -693,11 +722,12 @@ resource "aws_ecs_task_definition" "worker" {
 }
 
 resource "aws_ecs_task_definition" "runner" {
-  family                   = "${local.name_prefix}-runner"
+  for_each                 = local.runner_task_sizes
+  family                   = "${local.name_prefix}-runner-${each.key}"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
-  cpu                      = tostring(var.runner_cpu)
-  memory                   = tostring(var.runner_memory)
+  cpu                      = tostring(each.value.cpu)
+  memory                   = tostring(each.value.memory)
   execution_role_arn       = aws_iam_role.task_execution.arn
   task_role_arn            = aws_iam_role.runner_task.arn
 
@@ -738,7 +768,7 @@ resource "aws_ecs_task_definition" "runner" {
     }
   ])
 
-  tags = local.tags
+  tags = merge(local.tags, { ComputeTier = each.key })
 }
 
 resource "aws_ecs_service" "api" {
@@ -791,6 +821,10 @@ resource "aws_ecs_service" "worker" {
 
   depends_on = [aws_ecs_cluster_capacity_providers.this]
   tags       = local.tags
+
+  lifecycle {
+    ignore_changes = [desired_count]
+  }
 }
 
 resource "aws_ecs_task_definition" "dlq_replay" {

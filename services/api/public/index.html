@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Cloud Code Execution Engine | Recruiter Brief</title>
+    <title>CloudSandbox | Multi-Language Code Execution Platform</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -736,7 +736,7 @@
       <header class="topbar reveal" data-public="true">
         <div class="brand">
           <span class="brand-dot"></span>
-          <span>Cloud Code Execution Engine</span>
+          <span>CloudSandbox Execution Engine</span>
         </div>
         <div style="display: flex; align-items: center; gap: 0.6rem">
           <div class="health-summary" id="health-summary">
@@ -840,7 +840,7 @@
           </div>
           <div class="signal">
             <h3>Infrastructure Signals</h3>
-            <p>Private subnets + VPC endpoints keep workers off public IPs. PendingJobsCount metrics drive ECS auto-scaling.</p>
+            <p>Queue based processing, worker fleet scaling, resource limits, OpenTelemetry traces, and Prometheus/Grafana metrics.</p>
           </div>
           <div class="signal">
             <h3>Recruiter Lens</h3>
@@ -863,7 +863,7 @@
             </div>
             <div class="card">
               <h4>3. Sandbox Runner</h4>
-              <p>Executes JavaScript/Python/Java with strict timeout/process/file limits and bounded output capture.</p>
+              <p>Executes Java, Python, Go, JavaScript, TypeScript, C++, and C# with strict timeout/process/file limits and bounded output capture.</p>
             </div>
             <div class="card">
               <h4>4. Shared Data Plane</h4>
@@ -907,6 +907,44 @@
         </article>
       </section>
 
+      <section class="section section-grid" data-public="true">
+        <article class="panel demo-panel reveal delay-2">
+          <h2 class="section-title">CloudSandbox Runtime Matrix</h2>
+          <div id="runtime-cards" class="cards">
+            <div class="card">
+              <h4>Loading runtimes</h4>
+              <p>Fetching runtime catalog from the API.</p>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel demo-panel reveal delay-3">
+          <h2 class="section-title">Observability Dashboard</h2>
+          <div class="cards">
+            <div class="card">
+              <h4>Jobs / Second</h4>
+              <p><strong id="metric-jps">--</strong></p>
+            </div>
+            <div class="card">
+              <h4>Average Runtime</h4>
+              <p><strong id="metric-runtime">--</strong></p>
+            </div>
+            <div class="card">
+              <h4>Failure Rate</h4>
+              <p><strong id="metric-failure">--</strong></p>
+            </div>
+            <div class="card">
+              <h4>Worker Utilization</h4>
+              <p><strong id="metric-utilization">--</strong></p>
+            </div>
+          </div>
+          <div class="status-box">
+            <strong>Distributed Stack</strong>
+            <pre id="observability-json">Loading architecture summary...</pre>
+          </div>
+        </article>
+      </section>
+
       <section class="demo" data-public="true">
         <article class="panel demo-panel reveal delay-2">
           <h2 class="section-title">Live Sandbox Demo</h2>
@@ -922,9 +960,13 @@
               <div class="field">
                 <label for="language">Language</label>
                 <select id="language" name="language">
-                  <option value="javascript">javascript</option>
-                  <option value="python">python</option>
                   <option value="java">java</option>
+                  <option value="python">python</option>
+                  <option value="go">go</option>
+                  <option value="javascript" selected>javascript</option>
+                  <option value="typescript">typescript</option>
+                  <option value="cpp">cpp</option>
+                  <option value="csharp">csharp</option>
                 </select>
               </div>
               <div class="field">
@@ -1006,6 +1048,7 @@
       const healthSummary = document.getElementById("health-summary");
       const form = document.getElementById("job-form");
       const languageSelect = document.getElementById("language");
+      const memoryInput = document.getElementById("memoryMb");
       const sourceCodeInput = document.getElementById("sourceCode");
       const sourceEditorMount = document.getElementById("source-editor");
       const jobStatus = document.getElementById("job-status");
@@ -1036,6 +1079,12 @@
       const adminScalingTarget = document.getElementById("admin-scaling-target");
       const adminBreachBadge = document.getElementById("admin-breach-badge");
       const adminActivityList = document.getElementById("admin-activity-list");
+      const runtimeCards = document.getElementById("runtime-cards");
+      const observabilityJson = document.getElementById("observability-json");
+      const metricJps = document.getElementById("metric-jps");
+      const metricRuntime = document.getElementById("metric-runtime");
+      const metricFailure = document.getElementById("metric-failure");
+      const metricUtilization = document.getElementById("metric-utilization");
 
       let pollHandle = null;
       let latestJobId = null;
@@ -1061,16 +1110,35 @@
         }
       }
 
+      // Human enhancement point: add new language demos here after the backend
+      // schema, runner profile, and runner image support the language.
       const templates = {
-        javascript: 'console.log("Hello from recruiter demo")',
+        java: 'public class Main {\\n  public static void main(String[] args) {\\n    System.out.println("Hello from recruiter demo");\\n  }\\n}',
         python: 'print("Hello from recruiter demo")',
-        java: 'public class Main {\\n  public static void main(String[] args) {\\n    System.out.println("Hello from recruiter demo");\\n  }\\n}'
+        go: 'package main\\n\\nimport "fmt"\\n\\nfunc main() {\\n  fmt.Println("Hello from recruiter demo")\\n}',
+        javascript: 'console.log("Hello from recruiter demo")',
+        typescript: 'const message: string = "Hello from recruiter demo";\\nconsole.log(message);',
+        cpp: '#include <iostream>\\n\\nint main() {\\n  std::cout << "Hello from recruiter demo" << std::endl;\\n  return 0;\\n}',
+        csharp: 'using System;\\n\\npublic class Program {\\n  public static void Main() {\\n    Console.WriteLine("Hello from recruiter demo");\\n  }\\n}'
       };
 
+      // Monaco names sometimes differ from API language names; keep this map explicit.
       const languageToMonaco = {
-        javascript: "javascript",
+        java: "java",
         python: "python",
-        java: "java"
+        go: "go",
+        javascript: "javascript",
+        typescript: "typescript",
+        cpp: "cpp",
+        csharp: "csharp"
+      };
+
+      const defaultMemoryByLanguage = {
+        go: 512,
+        csharp: 512,
+        cpp: 256,
+        java: 256,
+        typescript: 256
       };
 
       const getSourceCodeValue = () => (monacoEditor ? monacoEditor.getValue() : sourceCodeInput.value);
@@ -1215,6 +1283,71 @@
         return Number.isFinite(number) ? number : fallback;
       };
 
+      const escapeHtml = (value) =>
+        String(value)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+
+      const loadRuntimes = async () => {
+        if (!runtimeCards) {
+          return;
+        }
+
+        try {
+          const { res, payload } = await fetchJson("/v1/runtimes");
+          if (!res.ok) {
+            throw new Error(`runtimes_failed_${res.status}`);
+          }
+
+          runtimeCards.innerHTML = (payload.runtimes || [])
+            .map(
+              (runtime) => `
+                <div class="card">
+                  <h4>${escapeHtml(runtime.displayName)}</h4>
+                  <p><strong>${escapeHtml(runtime.runtime)}</strong></p>
+                  <p>${escapeHtml((runtime.pipeline || []).join(" -> "))}</p>
+                </div>
+              `
+            )
+            .join("");
+        } catch (error) {
+          runtimeCards.innerHTML = `
+            <div class="card">
+              <h4>Runtime catalog unavailable</h4>
+              <p>The API did not return language runtime metadata.</p>
+            </div>
+          `;
+        }
+      };
+
+      const loadObservabilitySummary = async () => {
+        try {
+          const { res, payload } = await fetchJson("/v1/observability/summary");
+          if (!res.ok) {
+            throw new Error(`observability_failed_${res.status}`);
+          }
+
+          const metrics = payload.metrics || {};
+          metricJps.textContent = `${toNumber(metrics.jobsPerSecond).toFixed(3)}/s`;
+          metricRuntime.textContent = `${Math.round(toNumber(metrics.averageRuntimeMs))} ms`;
+          metricFailure.textContent = `${(toNumber(metrics.failureRate) * 100).toFixed(1)}%`;
+          metricUtilization.textContent = `${(toNumber(metrics.workerUtilization) * 100).toFixed(1)}%`;
+          observabilityJson.textContent = format({
+            queueDepth: metrics.queueDepth,
+            activeJobs: metrics.activeJobs,
+            workerFleet: metrics.workerFleet,
+            telemetry: payload.architecture?.observability,
+            updatedAt: metrics.updatedAt
+          });
+        } catch (error) {
+          observabilityJson.textContent = format({
+            error: "observability_unavailable"
+          });
+        }
+      };
+
       const renderScalingActivities = (activities) => {
         if (!adminActivityList) {
           return;
@@ -1272,6 +1405,8 @@
         adminBreachBadge.textContent = `Target Stable: ${loadPerCapacity.toFixed(1)} jobs/task`;
       };
 
+      // Human enhancement point: admin dashboard cards should be fed by this one
+      // server-side metrics endpoint, never by direct browser calls to AWS APIs.
       const refreshAdminMetrics = async () => {
         if (!adminDashboard || adminDashboard.classList.contains("hidden")) {
           return;
@@ -1462,6 +1597,77 @@
         analysisJson.textContent = format(payload);
       };
 
+      const streamJobEvents = async (id, apiKey) => {
+        if (!window.ReadableStream) {
+          return false;
+        }
+
+        try {
+          const base = getApiBase();
+          const res = await fetch(`${base}/v1/jobs/${id}/events`, {
+            headers: {
+              "x-api-key": apiKey
+            }
+          });
+
+          if (!res.ok || !res.body) {
+            return false;
+          }
+
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) {
+              break;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const messages = buffer.split("\n\n");
+            buffer = messages.pop() || "";
+
+            for (const message of messages) {
+              const event = message
+                .split("\n")
+                .find((line) => line.startsWith("event:"))
+                ?.replace("event:", "")
+                .trim();
+              const data = message
+                .split("\n")
+                .filter((line) => line.startsWith("data:"))
+                .map((line) => line.replace("data:", "").trim())
+                .join("\n");
+
+              if (!data) {
+                continue;
+              }
+
+              const payload = JSON.parse(data);
+              if (event === "job") {
+                setStatus(payload.status);
+                resultJson.textContent = format(payload);
+              }
+
+              if (event === "done") {
+                await Promise.all([loadQuotas(), loadHistory(), loadAudit(), loadObservabilitySummary()]);
+                return true;
+              }
+
+              if (event === "error") {
+                resultJson.textContent = format(payload);
+                return false;
+              }
+            }
+          }
+
+          return true;
+        } catch (error) {
+          return false;
+        }
+      };
+
       const pollJob = async (id, apiKey) => {
         if (pollHandle) {
           clearInterval(pollHandle);
@@ -1538,7 +1744,10 @@
 
           latestJobId = payload.jobId;
           jobIdText.textContent = payload.jobId;
-          await pollJob(payload.jobId, apiKey);
+          const streamed = await streamJobEvents(payload.jobId, apiKey);
+          if (!streamed) {
+            await pollJob(payload.jobId, apiKey);
+          }
         } catch (error) {
           setStatus("failed");
           resultJson.textContent = format({
@@ -1554,6 +1763,11 @@
 
       languageSelect.addEventListener("change", () => {
         setMonacoLanguage(languageSelect.value);
+
+        const defaultMemory = defaultMemoryByLanguage[languageSelect.value];
+        if (memoryInput && defaultMemory) {
+          memoryInput.value = String(defaultMemory);
+        }
 
         if (sourceCodeInput.dataset.edited === "true") {
           return;
@@ -1598,6 +1812,9 @@
         initMonacoEditor();
         refreshHealth();
         refreshHealthSummary();
+        loadRuntimes();
+        loadObservabilitySummary();
+        setInterval(loadObservabilitySummary, 5000);
         loadQuotas();
         loadHistory();
         loadAudit();

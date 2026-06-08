@@ -1,4 +1,4 @@
-FROM node:20-alpine AS builder
+FROM node:20-bookworm-slim AS builder
 WORKDIR /app
 
 COPY package*.json ./
@@ -9,10 +9,21 @@ COPY services/runner ./services/runner
 RUN npm install
 RUN npm run build --workspace @ccee/common && npm run build --workspace @ccee/runner
 
-FROM node:20-alpine
+FROM node:20-bookworm-slim
 WORKDIR /app
 
-RUN apk add --no-cache python3 openjdk17-jdk util-linux tini \
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    g++ \
+    golang-go \
+    mono-mcs \
+    mono-runtime \
+    openjdk-17-jdk-headless \
+    python3 \
+    tini \
+    util-linux \
+  && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /workspace \
   && chown -R node:node /workspace
 
@@ -27,5 +38,7 @@ RUN chmod -R a+rX /app
 
 USER node
 ENV RUN_ROOT=/workspace
-ENTRYPOINT ["/sbin/tini", "--"]
+ENV GOCACHE=/workspace/.cache/go-build
+ENV GOTMPDIR=/workspace/.gotmp
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "services/runner/dist/index.js"]

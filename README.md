@@ -1,4 +1,4 @@
-# Cloud Code Execution Engine (Mini Replit / Judge0 Style)
+# CloudSandbox: Cloud Code Execution Engine (Mini Replit / Judge0 Style)
 
 Secure, multi-tenant, asynchronous code execution platform with recruiter-facing UI and API.
 
@@ -9,7 +9,9 @@ Secure, multi-tenant, asynchronous code execution platform with recruiter-facing
 - Architecture: [`docs/architecture.md`](docs/architecture.md)
 - Security model: [`docs/security.md`](docs/security.md)
 - Scaling model: [`docs/scaling.md`](docs/scaling.md)
+- Observability: [`docs/observability.md`](docs/observability.md)
 - System design: [`docs/system-design.md`](docs/system-design.md)
+- Human enhancement scaffold: [`docs/enhancement-scaffold.md`](docs/enhancement-scaffold.md)
 - ADR: [`docs/adr/0001-why-fargate-over-ec2.md`](docs/adr/0001-why-fargate-over-ec2.md)
 - Demo script: [`demo/DEMO_SCRIPT.md`](demo/DEMO_SCRIPT.md)
 
@@ -30,6 +32,10 @@ Secure, multi-tenant, asynchronous code execution platform with recruiter-facing
   - Job history (`GET /v1/jobs`)
   - Cost visibility (`GET /v1/costs`)
   - Tenant audit feed (`GET /v1/audit`)
+  - Runtime catalog (`GET /v1/runtimes`)
+  - Prometheus metrics (`GET /metrics`)
+  - Observability summary (`GET /v1/observability/summary`)
+  - Real-time job status stream (`GET /v1/jobs/:jobId/events`)
   - Execution analysis (`POST /v1/jobs/:jobId/analyze`)
   - AI-backed analysis mode (`AI_PROVIDER=openai`) with retries/backoff and safe heuristic fallback
   - Recruiter UI at `/`
@@ -39,8 +45,9 @@ Secure, multi-tenant, asynchronous code execution platform with recruiter-facing
   - Queue-depth CloudWatch metric publishing (`CCEE/PendingJobsCount`)
   - Retry + exponential backoff for transient failures
 - `services/runner`
-  - Sandboxed execution runtime for `javascript`, `python`, `java`
+  - Sandboxed execution runtime for `java`, `python`, `go`, `javascript`, `typescript`, `cpp`, `csharp`
   - Java path compiles + runs (`javac` then `java`)
+  - Go, TypeScript, C++, and C# compile pipelines before execution
 - `packages/common`
   - Shared schemas and key conventions
 - `infra/terraform`
@@ -81,6 +88,28 @@ Secure, multi-tenant, asynchronous code execution platform with recruiter-facing
 3. Worker consumes queue job and marks running.
 4. Worker executes locally or dispatches ECS task (`EXECUTION_BACKEND=ecs`).
 5. Runner persists result; API polling endpoint exposes state transitions until terminal.
+6. Browser clients can also subscribe to `GET /v1/jobs/:jobId/events` for real-time SSE updates.
+
+## CloudSandbox multi-language execution
+
+Supported runtimes:
+
+- Java: `javac` compile, then `java -Xmx<memory>m Main`
+- Python: `python3 main.py`
+- Go: `go build -o main main.go`, then `./main`
+- JavaScript: `node main.js`
+- TypeScript: `tsc main.ts --outDir .build`, then `node .build/main.js`
+- C++: `g++ main.cpp -std=c++20 -O2 -pipe -o main`, then `./main`
+- C#: `mcs -out:Program.exe Program.cs`, then `mono Program.exe`
+
+The runtime catalog is available at `GET /v1/runtimes`.
+
+## Observability stack
+
+- OpenTelemetry API and worker spans are available when `OTEL_ENABLED=true`.
+- Prometheus scrapes `GET /metrics`.
+- Grafana is provisioned locally with a CloudSandbox dashboard.
+- Dashboard metrics include jobs per second, average runtime, failure rate, queue depth, and worker utilization.
 
 ### Architecture sequence diagram
 

@@ -11,6 +11,7 @@ import {
 } from "@aws-sdk/client-application-auto-scaling";
 import { DescribeServicesCommand, ECSClient, RunTaskCommand } from "@aws-sdk/client-ecs";
 import {
+  LANGUAGE_RUNTIME_CATALOG,
   SUPPORTED_LANGUAGES,
   classifyFailureCategory,
   executionResultSchema,
@@ -30,6 +31,7 @@ import { Queue } from "bullmq";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { Redis } from "ioredis";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
+import type { Span } from "@opentelemetry/api";
 import { z } from "zod";
 
 import { generateExecutionAnalysis } from "./analysis.js";
@@ -43,6 +45,7 @@ import {
   type TenantPolicy,
   type TenantPrincipal
 } from "./tenants.js";
+import { endSpan, getTracer, startTelemetry } from "./telemetry.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -50,6 +53,7 @@ declare module "fastify" {
     startedAtMs: number;
     authTenantId?: string;
     authSubject?: string;
+    otelSpan?: Span;
   }
 }
 
@@ -78,6 +82,13 @@ type RateLimitDecision = {
   resetEpochSeconds: number;
   windowSeconds: number;
 };
+
+const telemetrySdk = startTelemetry({
+  enabled: config.OTEL_ENABLED,
+  serviceName: config.OTEL_SERVICE_NAME,
+  otlpEndpoint: config.OTEL_EXPORTER_OTLP_ENDPOINT
+});
+const tracer = getTracer();
 
 const app = Fastify({ logger: true });
 const tenantRegistry = loadTenantApiKeys(config.TENANT_API_KEYS_JSON);
@@ -375,15 +386,188 @@ const serializeJob = (data: Record<string, string>) => {
       billableDurationMs: toInt(data.billableDurationMs, result?.durationMs ?? 0),
       costModelVersion: data.costModelVersion || null
     },
+    computeTier: data.computeTier || null,
+    purchaseOption: data.purchaseOption || null,
     failureCategory: inferredFailureCategory,
     analysis: parseJson(data.analysis),
     analysisProvider: data.analysisProvider || null,
     analysisUpdatedAt: data.analysisUpdatedAt || null,
     analysisFallbackReason: data.analysisFallbackReason || null,
     error,
+    runtimeMs: result?.durationMs ?? null,
+    exitCode: result?.exitCode ?? null,
+    timestamp: data.completedAt || data.startedAt || data.createdAt || data.updatedAt,
+    executionEnvironment: data.taskArn ? "ecs-fargate-runner" : "local-runner",
     updatedAt: data.updatedAt
   };
 };
+
+type ObservabilitySnapshot = {
+  windowSeconds: number;
+  jobsPerSecond: number;
+  averageRuntimeMs: number;
+  failureRate: number;
+  queueDepth: number;
+  activeJobs: number;
+  workerUtilization: number;
+  submittedJobs: number;
+  completedJobs: number;
+  failedJobs: number;
+  workerFleet: {
+    desired: number;
+    running: number;
+    pending: number;
+    capacity: number;
+  };
+  updatedAt: string;
+};
+
+const parseStreamIdMs = (streamId: string): number => {
+  const [milliseconds] = streamId.split("-");
+  const parsed = Number(milliseconds);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const readRecentAuditEvents = async (
+  windowSeconds: number
+): Promise<Array<{ action: string; metadata: Record<string, unknown>; streamId: string }>> => {
+  const entries = await redis.xrevrange(
+    config.AUDIT_STREAM_KEY,
+    "+",
+    "-",
+    "COUNT",
+    config.METRICS_SAMPLE_LIMIT
+  );
+  const cutoffMs = Date.now() - windowSeconds * 1000;
+
+  return entries
+    .map((entry) => {
+      const [streamId, fields] = entry;
+      const fieldMap = streamFieldsToObject(fields);
+      return {
+        streamId,
+        action: fieldMap.action,
+        metadata: parseJson<Record<string, unknown>>(fieldMap.metadata) ?? {}
+      };
+    })
+    .filter((event) => parseStreamIdMs(event.streamId) >= cutoffMs);
+};
+
+const getWorkerFleetSnapshot = async (
+  activeJobs: number
+): Promise<ObservabilitySnapshot["workerFleet"]> => {
+  if (!config.ECS_CLUSTER_ARN) {
+    return {
+      desired: activeJobs > 0 ? 1 : 0,
+      running: activeJobs > 0 ? 1 : 0,
+      pending: 0,
+      capacity: config.WORKER_FLEET_CAPACITY
+    };
+  }
+
+  try {
+    const describe = await ecsClient.send(
+      new DescribeServicesCommand({
+        cluster: config.ECS_CLUSTER_ARN,
+        services: [config.ECS_WORKER_SERVICE_NAME]
+      })
+    );
+    const worker = describe.services?.[0];
+
+    return {
+      desired: worker?.desiredCount ?? 0,
+      running: worker?.runningCount ?? 0,
+      pending: worker?.pendingCount ?? 0,
+      capacity: Math.max(config.WORKER_FLEET_CAPACITY, worker?.desiredCount ?? 0, worker?.runningCount ?? 0, 1)
+    };
+  } catch (error) {
+    app.log.error({ err: error }, "observability_worker_fleet_failed");
+    return {
+      desired: 0,
+      running: 0,
+      pending: 0,
+      capacity: config.WORKER_FLEET_CAPACITY
+    };
+  }
+};
+
+const getObservabilitySnapshot = async (): Promise<ObservabilitySnapshot> => {
+  const counts = await queue.getJobCounts(
+    "waiting",
+    "active",
+    "delayed",
+    "paused",
+    "prioritized",
+    "waiting-children"
+  );
+  const queueDepth =
+    (counts.waiting ?? 0) +
+    (counts.delayed ?? 0) +
+    (counts.paused ?? 0) +
+    (counts.prioritized ?? 0) +
+    (counts["waiting-children"] ?? 0);
+  const activeJobs = counts.active ?? 0;
+
+  const events = await readRecentAuditEvents(config.METRICS_WINDOW_SECONDS);
+  const submittedJobs = events.filter((event) => event.action === "job_submitted").length;
+  const terminalEvents = events.filter(
+    (event) => event.action === "job_succeeded" || event.action === "job_failed"
+  );
+  const failedJobs = terminalEvents.filter((event) => event.action === "job_failed").length;
+  const durations = terminalEvents
+    .map((event) => Number(event.metadata.durationMs))
+    .filter((value) => Number.isFinite(value) && value >= 0);
+  const averageRuntimeMs =
+    durations.length > 0 ? durations.reduce((sum, value) => sum + value, 0) / durations.length : 0;
+  const workerFleet = await getWorkerFleetSnapshot(activeJobs);
+  const utilizationDenominator = Math.max(workerFleet.capacity, 1);
+
+  return {
+    windowSeconds: config.METRICS_WINDOW_SECONDS,
+    jobsPerSecond: Number((submittedJobs / config.METRICS_WINDOW_SECONDS).toFixed(6)),
+    averageRuntimeMs: Number(averageRuntimeMs.toFixed(2)),
+    failureRate: terminalEvents.length > 0 ? Number((failedJobs / terminalEvents.length).toFixed(6)) : 0,
+    queueDepth,
+    activeJobs,
+    workerUtilization: Number((activeJobs / utilizationDenominator).toFixed(6)),
+    submittedJobs,
+    completedJobs: terminalEvents.length,
+    failedJobs,
+    workerFleet,
+    updatedAt: nowIso()
+  };
+};
+
+const prometheusNumber = (value: number): string => (Number.isFinite(value) ? String(value) : "0");
+
+const renderPrometheusMetrics = (snapshot: ObservabilitySnapshot): string =>
+  [
+    "# HELP ccee_jobs_per_second Submitted jobs per second over the configured window.",
+    "# TYPE ccee_jobs_per_second gauge",
+    `ccee_jobs_per_second ${prometheusNumber(snapshot.jobsPerSecond)}`,
+    "# HELP ccee_average_runtime_ms Average terminal job runtime in milliseconds over the configured window.",
+    "# TYPE ccee_average_runtime_ms gauge",
+    `ccee_average_runtime_ms ${prometheusNumber(snapshot.averageRuntimeMs)}`,
+    "# HELP ccee_failure_rate Ratio of failed terminal jobs over the configured window.",
+    "# TYPE ccee_failure_rate gauge",
+    `ccee_failure_rate ${prometheusNumber(snapshot.failureRate)}`,
+    "# HELP ccee_queue_depth Pending queue depth.",
+    "# TYPE ccee_queue_depth gauge",
+    `ccee_queue_depth ${prometheusNumber(snapshot.queueDepth)}`,
+    "# HELP ccee_worker_utilization Active jobs divided by configured or observed worker capacity.",
+    "# TYPE ccee_worker_utilization gauge",
+    `ccee_worker_utilization ${prometheusNumber(snapshot.workerUtilization)}`,
+    "# HELP ccee_worker_running ECS or local worker tasks currently running.",
+    "# TYPE ccee_worker_running gauge",
+    `ccee_worker_running ${prometheusNumber(snapshot.workerFleet.running)}`,
+    "# HELP ccee_worker_desired ECS or local worker desired count.",
+    "# TYPE ccee_worker_desired gauge",
+    `ccee_worker_desired ${prometheusNumber(snapshot.workerFleet.desired)}`,
+    "# HELP ccee_worker_pending ECS worker tasks pending.",
+    "# TYPE ccee_worker_pending gauge",
+    `ccee_worker_pending ${prometheusNumber(snapshot.workerFleet.pending)}`,
+    ""
+  ].join("\n");
 
 const fingerprintIdentity = (value: string): string =>
   createHash("sha256").update(value).digest("hex").slice(0, 16);
@@ -703,6 +887,10 @@ const authenticateTenant = async (
 app.addHook("onRequest", async (request, reply) => {
   request.traceId = getTraceId(request);
   request.startedAtMs = Date.now();
+  request.otelSpan = tracer.startSpan(`${request.method} ${request.url}`);
+  request.otelSpan.setAttribute("ccee.trace_id", request.traceId);
+  request.otelSpan.setAttribute("http.request.method", request.method);
+  request.otelSpan.setAttribute("url.path", request.url);
   reply.header("x-request-id", request.traceId);
 });
 
@@ -720,6 +908,14 @@ app.addHook("onResponse", async (request, reply) => {
     },
     "request_completed"
   );
+  endSpan(request.otelSpan, reply.statusCode, {
+    "ccee.trace_id": request.traceId,
+    "ccee.tenant_id": request.authTenantId ?? null,
+    "ccee.subject": request.authSubject ?? null,
+    "http.response.status_code": reply.statusCode,
+    "http.route": request.routeOptions.url ?? request.url,
+    "ccee.duration_ms": durationMs
+  });
 });
 
 app.get("/health", async () => ({ status: "ok", service: "api" }));
@@ -756,6 +952,40 @@ app.get("/health/summary", async () => {
   };
 });
 
+app.get("/v1/runtimes", async (request, reply) =>
+  reply.send({
+    traceId: request.traceId,
+    runtimes: LANGUAGE_RUNTIME_CATALOG,
+    isolation: {
+      queue: "BullMQ/Redis asynchronous dispatch",
+      workerFleet: "Horizontally scalable worker service dispatching isolated runner tasks",
+      container: "Non-root container process with CPU, memory, wall-clock, process-count, file-size, stdout/stderr, and filesystem controls",
+      cloud: "ECS/Fargate runner tasks run on AWS-managed Firecracker-backed Fargate isolation"
+    }
+  })
+);
+
+app.get("/v1/observability/summary", async (request, reply) => {
+  const snapshot = await getObservabilitySnapshot();
+
+  return reply.send({
+    traceId: request.traceId,
+    metrics: snapshot,
+    architecture: {
+      controlPlane: "Fastify API",
+      queue: "BullMQ on Redis",
+      workers: "Worker fleet with queue-depth autoscaling",
+      execution: "Ephemeral per-job runner containers/tasks",
+      observability: ["OpenTelemetry traces", "Prometheus /metrics", "Grafana dashboard provisioning"]
+    }
+  });
+});
+
+app.get("/metrics", async (_request, reply) => {
+  const snapshot = await getObservabilitySnapshot();
+  return reply.type("text/plain; version=0.0.4; charset=utf-8").send(renderPrometheusMetrics(snapshot));
+});
+
 app.get("/", async (_request, reply) => reply.sendFile("index.html"));
 app.get("/admin/observability", async (_request, reply) => reply.sendFile("index.html"));
 
@@ -763,6 +993,8 @@ const adminBurstSchema = z.object({
   count: z.coerce.number().int().min(1).max(config.ADMIN_BURST_MAX).default(config.ADMIN_BURST_MAX)
 });
 
+// Human enhancement point: add internal SRE dashboard data here before adding UI cards.
+// Keep AWS SDK calls server-side so the browser never receives cloud credentials.
 app.get("/v1/admin/metrics", async (request, reply) => {
   const admin = await requireAdmin(request, reply);
   if (!admin) {
@@ -1163,6 +1395,8 @@ app.get("/v1/costs", async (request, reply) => {
   });
 });
 
+// Human enhancement point: every new user-facing mutating route should follow
+// this order: auth -> schema validation -> payload guards -> rate limit -> quota -> audit.
 const submitExecutionHandler = async (request: FastifyRequest, reply: FastifyReply) => {
   const tenant = await authenticateTenant(request, reply);
   if (!tenant) {
@@ -1436,6 +1670,100 @@ const getExecutionHandler = async (request: FastifyRequest, reply: FastifyReply)
 app.get("/v1/jobs/:jobId", getExecutionHandler);
 app.get("/executions/:id", getExecutionHandler);
 
+app.get("/v1/jobs/:jobId/events", async (request, reply) => {
+  const tenant = await authenticateTenant(request, reply);
+  if (!tenant) {
+    return;
+  }
+
+  const jobId = getJobIdParam(request);
+  if (!jobId) {
+    return reply.code(400).send({ error: "validation_error", traceId: request.traceId, reason: "missing_job_id" });
+  }
+
+  const key = redisJobKey(jobId);
+  const initial = await redis.hgetall(key);
+  if (!initial.status || initial.tenantId !== tenant.tenantId) {
+    return reply.code(404).send({ error: "not_found", traceId: request.traceId });
+  }
+
+  reply.hijack();
+  reply.raw.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
+    "x-request-id": request.traceId
+  });
+  reply.raw.flushHeaders?.();
+
+  let closed = false;
+  let lastUpdatedAt = "";
+  const terminalStatuses = new Set(["succeeded", "failed", "timed_out"]);
+
+  const sendEvent = (event: string, data: unknown): void => {
+    if (closed) {
+      return;
+    }
+
+    reply.raw.write(`event: ${event}\n`);
+    reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  const closeStream = (): void => {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    clearInterval(interval);
+    reply.raw.end();
+  };
+
+  const publishSnapshot = async (): Promise<void> => {
+    try {
+      const data = await redis.hgetall(key);
+      if (!data.status || data.tenantId !== tenant.tenantId) {
+        sendEvent("error", { error: "not_found", traceId: request.traceId });
+        closeStream();
+        return;
+      }
+
+      const execution = serializeJob(data);
+      if (execution.updatedAt !== lastUpdatedAt) {
+        lastUpdatedAt = execution.updatedAt;
+        sendEvent("job", { ...execution, executionId: execution.jobId });
+      }
+
+      if (terminalStatuses.has(String(execution.status))) {
+        sendEvent("done", {
+          jobId,
+          executionId: jobId,
+          status: execution.status,
+          traceId: request.traceId
+        });
+        closeStream();
+      }
+    } catch (error) {
+      request.log.error({ err: error, jobId, traceId: request.traceId }, "job_event_stream_failed");
+      sendEvent("error", { error: "stream_failed", traceId: request.traceId });
+      closeStream();
+    }
+  };
+
+  const interval = setInterval(() => {
+    void publishSnapshot();
+  }, 1000);
+  request.raw.on("close", closeStream);
+
+  await publishSnapshot();
+});
+
+app.get("/executions/:id/events", async (request, reply) => {
+  const params = request.params as Record<string, unknown>;
+  const id = typeof params.id === "string" ? params.id : "";
+  return reply.redirect(`/v1/jobs/${encodeURIComponent(id)}/events`, 307);
+});
+
 app.get<{ Params: { id: string } }>("/executions/:id/logs", async (request, reply) => {
   const tenant = await authenticateTenant(request, reply);
   if (!tenant) {
@@ -1609,6 +1937,8 @@ const start = async (): Promise<void> => {
 
 const shutdown = async (): Promise<void> => {
   await queue.close();
+  await dlqQueue.close();
+  await telemetrySdk?.shutdown();
   redis.disconnect();
   await app.close();
 };

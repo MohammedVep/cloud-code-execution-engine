@@ -1,0 +1,12 @@
+apiVersion: 1
+
+providers:
+  - name: CCEE
+    orgId: 1
+    folder: CloudSandbox
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

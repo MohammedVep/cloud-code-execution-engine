@@ -9,6 +9,8 @@ import { getQueueDepth } from "./queue-metrics.js";
 import { dispatchEcsRunner } from "./runners/ecs-runner.js";
 import { executeLocalRunner } from "./runners/local-runner.js";
 import { markCompleted, markDeadLettered, markDispatched, markFailed, markRetrying, markRunning } from "./store.js";
+import { SpanStatusCode } from "@opentelemetry/api";
+import { endSpan, getTracer, startTelemetry } from "./telemetry.js";
 
 const redisUrl = new URL(config.redisUrl);
 const redisConnection = {
@@ -26,6 +28,8 @@ const ecsClient = new ECSClient({ region: config.awsRegion });
 const cloudWatchClient = new CloudWatchClient({ region: config.awsRegion });
 const queue = new Queue(config.queueName, { connection: redisConnection });
 const deadLetterQueue = new Queue(config.dlqQueueName, { connection: redisConnection });
+const telemetrySdk = startTelemetry(config.telemetry);
+const tracer = getTracer();
 
 const jitteredBackoff = (attemptsMade: number, baseDelayMs: number, maxDelayMs: number): number => {
   const exponential = baseDelayMs * 2 ** Math.max(0, attemptsMade - 1);
@@ -83,47 +87,86 @@ const worker = new Worker(
   async (job) => {
     const payload = queueJobPayloadSchema.parse(job.data);
     const attemptNumber = job.attemptsMade + 1;
+    const span = tracer.startSpan("worker.process_job");
+    span.setAttribute("ccee.trace_id", payload.traceId ?? "none");
+    span.setAttribute("ccee.job_id", payload.jobId);
+    span.setAttribute("ccee.tenant_id", payload.tenant.tenantId);
+    span.setAttribute("ccee.language", payload.request.language);
+    span.setAttribute("ccee.execution_backend", config.executionBackend);
+    span.setAttribute("messaging.system", "bullmq");
+    span.setAttribute("messaging.destination.name", config.queueName);
+    span.setAttribute("messaging.message.id", job.id ?? payload.jobId);
+    span.setAttribute("messaging.operation", "process");
+    span.setAttribute("ccee.attempt", attemptNumber);
 
-    await markRunning(
-      redis,
-      payload.jobId,
-      payload.tenant.tenantId,
-      config.auditStreamKey,
-      attemptNumber,
-      payload.traceId
-    );
-
-    if (config.executionBackend === "local") {
-      const result = await executeLocalRunner(payload, config.runnerImage, config.maxStdioBytes);
-      await markCompleted(
+    try {
+      await markRunning(
         redis,
         payload.jobId,
         payload.tenant.tenantId,
-        result,
-        {
-          cpuMillicores: payload.request.cpuMillicores,
-          memoryMb: payload.request.memoryMb
-        },
-        config.jobTtlSeconds,
         config.auditStreamKey,
-        true,
+        attemptNumber,
         payload.traceId
       );
-      return result;
+
+      // Human enhancement point: add new execution backends behind this branch.
+      // The worker should only decide dispatch; sandbox policy belongs in the runner/task config.
+      if (config.executionBackend === "local") {
+        const result = await executeLocalRunner(payload, config.runnerImage, config.maxStdioBytes);
+        await markCompleted(
+          redis,
+          payload.jobId,
+          payload.tenant.tenantId,
+          result,
+          {
+            cpuMillicores: payload.request.cpuMillicores,
+            memoryMb: payload.request.memoryMb
+          },
+          null,
+          config.jobTtlSeconds,
+          config.auditStreamKey,
+          true,
+          payload.traceId
+        );
+        endSpan(span, result.status === "succeeded" ? SpanStatusCode.OK : SpanStatusCode.ERROR, {
+          "ccee.job_status": result.status,
+          "ccee.duration_ms": result.durationMs,
+          "ccee.exit_code": result.exitCode
+        });
+        return result;
+      }
+
+      const dispatch = await dispatchEcsRunner(ecsClient, config, payload);
+      await markDispatched(
+        redis,
+        payload.jobId,
+        payload.tenant.tenantId,
+        dispatch,
+        config.jobTtlSeconds,
+        config.auditStreamKey,
+        payload.traceId
+      );
+
+      endSpan(span, SpanStatusCode.OK, {
+        "ccee.job_status": "dispatched",
+        "ccee.task_arn": dispatch.taskArn,
+        "ccee.task_definition_arn": dispatch.taskDefinitionArn,
+        "ccee.compute_tier": dispatch.computeTier,
+        "ccee.purchase_option": dispatch.purchaseOption
+      });
+      return dispatch;
+    } catch (error) {
+      if (error instanceof Error) {
+        span.recordException(error);
+      } else {
+        span.recordException(String(error));
+      }
+      endSpan(span, SpanStatusCode.ERROR, {
+        "ccee.job_status": "failed",
+        "ccee.error": error instanceof Error ? error.message : "Unknown worker failure"
+      });
+      throw error;
     }
-
-    const taskArn = await dispatchEcsRunner(ecsClient, config, payload);
-    await markDispatched(
-      redis,
-      payload.jobId,
-      payload.tenant.tenantId,
-      taskArn,
-      config.jobTtlSeconds,
-      config.auditStreamKey,
-      payload.traceId
-    );
-
-    return { taskArn };
   },
   {
     connection: redisConnection,
@@ -165,6 +208,8 @@ worker.on("failed", async (job, error) => {
     return;
   }
 
+  // Human enhancement point: this is the poison-job boundary.
+  // Add alerting, quarantine metadata, or automated replay hooks here without losing the original payload.
   await markFailed(
     redis,
     parsedPayload.data.jobId,
@@ -208,6 +253,7 @@ const shutdown = async (): Promise<void> => {
   await worker.close();
   await queue.close();
   await deadLetterQueue.close();
+  await telemetrySdk?.shutdown();
   redis.disconnect();
 };
 

@@ -40,6 +40,12 @@ services:
       AI_ANALYSIS_TIMEOUT_MS: 10000
       AI_ANALYSIS_RETRIES: 2
       AI_ANALYSIS_RETRY_BACKOFF_MS: 500
+      OTEL_ENABLED: "false"
+      OTEL_SERVICE_NAME: ccee-api
+      OTEL_EXPORTER_OTLP_ENDPOINT: ""
+      METRICS_WINDOW_SECONDS: 60
+      METRICS_SAMPLE_LIMIT: 1000
+      WORKER_FLEET_CAPACITY: 4
       OPENAI_API_KEY: ""
       TENANT_POLICIES_JSON: "{}"
       TENANT_API_KEYS_JSON: '{"dev-local-key":{"tenantId":"tenant-dev","maxConcurrentJobs":5,"maxDailyJobs":1000}}'
@@ -47,6 +53,34 @@ services:
       - "8080:8080"
     depends_on:
       - redis
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: ccee-prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - api
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    container_name: ccee-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
 
   worker:
     build:
@@ -68,6 +102,9 @@ services:
       QUEUE_DEPTH_METRIC_NAME: PendingJobsCount
       QUEUE_DEPTH_PUBLISH_INTERVAL_MS: 30000
       QUEUE_DEPTH_METRIC_SERVICE_NAME: worker
+      OTEL_ENABLED: "false"
+      OTEL_SERVICE_NAME: ccee-worker
+      OTEL_EXPORTER_OTLP_ENDPOINT: ""
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:

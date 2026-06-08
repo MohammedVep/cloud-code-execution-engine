@@ -4,18 +4,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  RUNNER_COMPUTE_TIERS,
+  RUNNER_PURCHASE_OPTIONS,
   classifyFailureCategory,
   estimateExecutionCostUsd,
   executionResultSchema,
   nowIso,
   queueJobPayloadSchema,
   redisJobKey,
+  resolveCostModelVersion,
   tenantDailyCostKey,
   tenantActiveJobsKey,
-  type ExecutionResult
+  type ExecutionResult,
+  type RunnerComputeTier,
+  type RunnerPurchaseOption
 } from "@ccee/common";
 import { Redis } from "ioredis";
 import { z } from "zod";
+
+import { getRuntimePlan } from "./language-profiles.js";
 
 const envSchema = z.object({
   JOB_DATA_B64: z.string().min(1),
@@ -23,7 +30,9 @@ const envSchema = z.object({
   REDIS_URL: z.string().url().optional(),
   AUDIT_STREAM_KEY: z.string().min(1).default("audit:events"),
   MAX_STDIO_BYTES: z.coerce.number().int().positive().max(1_000_000).default(65_536),
-  RUN_ROOT: z.string().min(1).optional()
+  RUN_ROOT: z.string().min(1).optional(),
+  RUNNER_COMPUTE_TIER: z.enum(RUNNER_COMPUTE_TIERS).optional(),
+  RUNNER_PURCHASE_OPTION: z.enum(RUNNER_PURCHASE_OPTIONS).optional()
 });
 
 const truncate = (input: string, maxBytes: number): string => {
@@ -33,62 +42,6 @@ const truncate = (input: string, maxBytes: number): string => {
   }
 
   return buffer.subarray(0, maxBytes).toString("utf8");
-};
-
-type RuntimeStep = {
-  command: string;
-  args: string[];
-  stdin?: string;
-};
-
-type RuntimePlan = {
-  fileName: string;
-  steps: RuntimeStep[];
-};
-
-const detectJavaClassName = (sourceCode: string): string => {
-  const match = sourceCode.match(/public\s+class\s+([A-Za-z_][A-Za-z0-9_]*)/);
-  if (match?.[1]) {
-    return match[1];
-  }
-
-  return "Main";
-};
-
-const getRuntimePlan = (
-  language: string,
-  sourceCode: string,
-  stdin: string,
-  memoryMb: number
-): RuntimePlan => {
-  if (language === "javascript") {
-    return {
-      fileName: "main.js",
-      steps: [{ command: "node", args: ["main.js"], stdin }]
-    };
-  }
-
-  if (language === "python") {
-    return {
-      fileName: "main.py",
-      steps: [{ command: "python3", args: ["main.py"], stdin }]
-    };
-  }
-
-  if (language === "java") {
-    const className = detectJavaClassName(sourceCode);
-    const maxHeap = Math.max(64, Math.floor(memoryMb * 0.75));
-
-    return {
-      fileName: `${className}.java`,
-      steps: [
-        { command: "javac", args: [`${className}.java`] },
-        { command: "java", args: [`-Xmx${maxHeap}m`, className], stdin }
-      ]
-    };
-  }
-
-  throw new Error(`Unsupported language: ${language}`);
 };
 
 type ProcessOutcome = {
@@ -113,8 +66,8 @@ const runLimitedProcess = async (params: {
     "prlimit",
     [
       `--cpu=${cpuSeconds}`,
-      "--nproc=64",
-      "--fsize=1048576",
+      "--nproc=128",
+      "--fsize=16777216",
       "--",
       params.command,
       ...params.args
@@ -137,6 +90,11 @@ const runLimitedProcess = async (params: {
   child.stderr.on("data", (chunk) => {
     stderr += chunk.toString("utf8");
     stderr = truncate(stderr, params.maxStdioBytes);
+  });
+
+  child.stdin.on("error", () => {
+    // Fast-failing compilers can close stdin before Node finishes writing.
+    // Treat that as process output/state, not as a runner infrastructure crash.
   });
 
   if (params.stdin !== undefined) {
@@ -183,13 +141,28 @@ const executeUserCode = async (
   const runRoot = runRootOverride || tmpdir();
   await mkdir(runRoot, { recursive: true });
 
+  // Compiler caches live inside the ephemeral tmpfs workspace when the worker
+  // runs the container with a read-only root filesystem.
+  const isScratchDirInRunRoot = (value: string | undefined): value is string => {
+    if (!value) {
+      return false;
+    }
+
+    return value === runRoot || value.startsWith(`${runRoot}/`);
+  };
+  const compilerScratchDirs = [process.env.GOCACHE, process.env.GOTMPDIR].filter(isScratchDirInRunRoot);
+  await Promise.all(compilerScratchDirs.map((dir) => mkdir(dir, { recursive: true })));
+
   const runDir = await mkdtemp(join(runRoot, "ccee-job-"));
   const sourcePath = join(runDir, runtime.fileName);
 
   const startedAt = Date.now();
 
   try {
-    await writeFile(sourcePath, payload.request.sourceCode, { encoding: "utf8", mode: 0o600 });
+    await writeFile(sourcePath, runtime.sourceCode ?? payload.request.sourceCode, {
+      encoding: "utf8",
+      mode: 0o600
+    });
 
     const deadline = startedAt + payload.request.timeoutMs;
     let combinedStdout = "";
@@ -252,16 +225,26 @@ const persistResultToRedis = async (
   },
   result: ExecutionResult,
   auditStreamKey: string,
+  billing: {
+    computeTier?: RunnerComputeTier | null;
+    purchaseOption?: RunnerPurchaseOption | null;
+  },
   traceId?: string
 ): Promise<void> => {
   const redis = new Redis(redisUrl, { maxRetriesPerRequest: 2 });
   const now = nowIso();
+  const existing = await redis.hmget(redisJobKey(jobId), "computeTier", "purchaseOption");
+  const computeTier = billing.computeTier ?? (existing[0] as RunnerComputeTier | null);
+  const purchaseOption = billing.purchaseOption ?? (existing[1] as RunnerPurchaseOption | null);
   const estimatedCostUsd = estimateExecutionCostUsd({
     durationMs: result.durationMs,
     cpuMillicores: request.cpuMillicores,
-    memoryMb: request.memoryMb
+    memoryMb: request.memoryMb,
+    computeTier,
+    purchaseOption
   });
   const failureCategory = classifyFailureCategory({ result });
+  const costModelVersion = resolveCostModelVersion({ computeTier, purchaseOption });
 
   const updates: Record<string, string> = {
     status: result.status,
@@ -269,13 +252,19 @@ const persistResultToRedis = async (
     estimatedCostUsd: estimatedCostUsd.toFixed(8),
     billableDurationMs: String(result.durationMs),
     failureCategory,
-    costModelVersion: "fargate-v1",
+    costModelVersion,
     currentAttempt: "",
     retryScheduledAt: "",
     completedAt: now,
     updatedAt: now,
     error: ""
   };
+  if (computeTier) {
+    updates.computeTier = computeTier;
+  }
+  if (purchaseOption) {
+    updates.purchaseOption = purchaseOption;
+  }
   if (traceId) {
     updates.traceId = traceId;
   }
@@ -316,6 +305,9 @@ const persistResultToRedis = async (
       durationMs: result.durationMs,
       estimatedCostUsd,
       failureCategory,
+      computeTier: computeTier ?? null,
+      purchaseOption: purchaseOption ?? null,
+      costModelVersion,
       traceId: traceId ?? null
     })
   );
@@ -348,6 +340,10 @@ const run = async (): Promise<void> => {
       },
       result,
       env.AUDIT_STREAM_KEY,
+      {
+        computeTier: env.RUNNER_COMPUTE_TIER,
+        purchaseOption: env.RUNNER_PURCHASE_OPTION
+      },
       payload.traceId
     );
     return;
@@ -385,6 +381,10 @@ run().catch(async (error) => {
         },
         fallback,
         env.data.AUDIT_STREAM_KEY,
+        {
+          computeTier: env.data.RUNNER_COMPUTE_TIER,
+          purchaseOption: env.data.RUNNER_PURCHASE_OPTION
+        },
         payload.traceId
       );
 
