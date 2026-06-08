@@ -57,7 +57,7 @@ test("getRuntimePlan creates C++ compile and run steps", () => {
 
   assert.equal(plan.fileName, "main.cpp");
   assert.deepEqual(plan.steps, [
-    { command: "g++", args: ["main.cpp", "-std=c++20", "-O2", "-pipe", "-o", "main"] },
+    { command: "g++", args: ["main.cpp", "-std=c++23", "-O2", "-pipe", "-o", "main"] },
     { command: "./main", args: [], stdin: "" }
   ]);
 });

@@ -48,12 +48,12 @@ flowchart TD
 - Makes retry and dead-letter patterns feasible.
 
 ## CloudSandbox Runtime Matrix
-- Java: compile with `javac`, run on OpenJDK with memory-bound heap.
+- Java: compile with `javac`, run on Eclipse Temurin JDK 25.0.3 with memory-bound heap.
 - Python: run with `python3`.
 - Go: compile with `go build`, execute bounded native binary.
-- JavaScript: run with Node.js.
-- TypeScript: compile with `tsc`, run emitted JavaScript with Node.js.
-- C++: compile with `g++` C++20, execute bounded native binary.
+- JavaScript: run with Node.js 24.16.0 LTS.
+- TypeScript: compile with `tsc`, run emitted JavaScript with Node.js 24.16.0 LTS.
+- C++: compile with GCC 14.2 using C++23, execute bounded native binary.
 - C#: compile with `mcs`, run with Mono.
 
 ## Observability

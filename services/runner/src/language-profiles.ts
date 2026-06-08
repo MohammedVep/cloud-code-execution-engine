@@ -119,7 +119,7 @@ export const getRuntimePlan = (
     return {
       fileName: "main.cpp",
       steps: [
-        { command: "g++", args: ["main.cpp", "-std=c++20", "-O2", "-pipe", "-o", "main"] },
+        { command: "g++", args: ["main.cpp", "-std=c++23", "-O2", "-pipe", "-o", "main"] },
         { command: "./main", args: [], stdin }
       ]
     };

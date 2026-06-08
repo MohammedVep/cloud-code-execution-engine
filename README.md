@@ -94,12 +94,12 @@ Secure, multi-tenant, asynchronous code execution platform with recruiter-facing
 
 Supported runtimes:
 
-- Java: `javac` compile, then `java -Xmx<memory>m Main`
+- Java: Eclipse Temurin JDK 25.0.3, `javac` compile, then `java -Xmx<memory>m Main`
 - Python: `python3 main.py`
 - Go: `go build -o main main.go`, then `./main`
 - JavaScript: `node main.js`
 - TypeScript: `tsc main.ts --outDir .build`, then `node .build/main.js`
-- C++: `g++ main.cpp -std=c++20 -O2 -pipe -o main`, then `./main`
+- C++: `g++ main.cpp -std=c++23 -O2 -pipe -o main`, then `./main`
 - C#: `mcs -out:Program.exe Program.cs`, then `mono Program.exe`
 
 The runtime catalog is available at `GET /v1/runtimes`.
@@ -221,7 +221,7 @@ Worker metric config:
 
 Prerequisites:
 
-- Node.js 20+
+- Node.js 24.16.0+
 - Docker Desktop or Colima
 
 Example with Colima:

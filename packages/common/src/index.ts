@@ -29,7 +29,7 @@ export const LANGUAGE_RUNTIME_CATALOG: LanguageRuntime[] = [
     language: "java",
     displayName: "Java",
     sourceFile: "Main.java",
-    runtime: "OpenJDK 17",
+    runtime: "Eclipse Temurin JDK 25.0.3",
     pipeline: ["javac Main.java", "java -Xmx<memory>m Main"],
     environment: "Compiled JVM runtime inside an ephemeral container workspace",
     isolation: ["Fargate/Firecracker task boundary", "non-root user", "CPU/memory/time/pid/file limits"]
@@ -56,7 +56,7 @@ export const LANGUAGE_RUNTIME_CATALOG: LanguageRuntime[] = [
     language: "javascript",
     displayName: "JavaScript",
     sourceFile: "main.js",
-    runtime: "Node.js 20",
+    runtime: "Node.js 24.16.0 LTS",
     pipeline: ["node main.js"],
     environment: "Interpreted Node.js runtime inside an ephemeral container workspace",
     isolation: ["Fargate/Firecracker task boundary", "non-root user", "CPU/memory/time/pid/file limits"]
@@ -65,7 +65,7 @@ export const LANGUAGE_RUNTIME_CATALOG: LanguageRuntime[] = [
     language: "typescript",
     displayName: "TypeScript",
     sourceFile: "main.ts",
-    runtime: "TypeScript compiler + Node.js 20",
+    runtime: "TypeScript compiler + Node.js 24.16.0 LTS",
     pipeline: ["tsc main.ts --outDir .build", "node .build/main.js"],
     environment: "Compiled-to-JavaScript runtime inside an ephemeral container workspace",
     isolation: ["Fargate/Firecracker task boundary", "non-root user", "CPU/memory/time/pid/file limits"]
@@ -74,8 +74,8 @@ export const LANGUAGE_RUNTIME_CATALOG: LanguageRuntime[] = [
     language: "cpp",
     displayName: "C++",
     sourceFile: "main.cpp",
-    runtime: "g++ C++20",
-    pipeline: ["g++ main.cpp -std=c++20 -O2 -pipe -o main", "./main"],
+    runtime: "GCC 14.2 C++23",
+    pipeline: ["g++ main.cpp -std=c++23 -O2 -pipe -o main", "./main"],
     environment: "Compiled native binary inside an ephemeral container workspace",
     isolation: ["Fargate/Firecracker task boundary", "non-root user", "CPU/memory/time/pid/file limits"]
   },

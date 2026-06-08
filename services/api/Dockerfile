@@ -1,4 +1,4 @@
-FROM node:20-alpine AS builder
+FROM node:24.16.0-alpine AS builder
 WORKDIR /app
 
 COPY package*.json ./
@@ -9,7 +9,7 @@ COPY services/api ./services/api
 RUN npm install
 RUN npm run build --workspace @ccee/common && npm run build --workspace @ccee/api
 
-FROM node:20-alpine
+FROM node:24.16.0-alpine
 WORKDIR /app
 
 COPY --from=builder /app/package*.json ./
