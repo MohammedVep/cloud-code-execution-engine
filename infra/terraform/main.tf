@@ -778,7 +778,8 @@ resource "aws_ecs_service" "api" {
   desired_count   = var.api_desired_count
   launch_type     = "FARGATE"
 
-  deployment_minimum_healthy_percent = 50
+  # Keep the single-task public API available during Fargate platform refreshes.
+  deployment_minimum_healthy_percent = 100
   deployment_maximum_percent         = 200
   enable_execute_command             = true
 
