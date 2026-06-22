@@ -762,7 +762,7 @@
           <div class="admin-controls">
             <label>
               API Base URL
-              <input id="admin-api-base" type="text" placeholder="https://your-api.example.com" />
+              <input id="admin-api-base" type="text" placeholder="Same-origin Vercel API proxy" />
             </label>
             <label>
               Admin API Key
@@ -1105,8 +1105,12 @@
       }
 
       if (adminApiBaseInput) {
+        const legacyAwsHttpBase = ["http:", "", "ccee-api-alb-371008494.us-east-1.elb.amazonaws.com"].join("/");
         const storedApiBase = localStorage.getItem("ccee_api_base");
-        if (storedApiBase) {
+        if (window.location.protocol === "https:" && storedApiBase?.startsWith(legacyAwsHttpBase)) {
+          localStorage.removeItem("ccee_api_base");
+          adminApiBaseInput.value = defaultApiBase;
+        } else if (storedApiBase) {
           adminApiBaseInput.value = storedApiBase;
         } else if (defaultApiBase) {
           adminApiBaseInput.value = defaultApiBase;

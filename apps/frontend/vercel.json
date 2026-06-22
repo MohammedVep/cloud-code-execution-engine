@@ -5,6 +5,26 @@
   "trailingSlash": false,
   "rewrites": [
     {
+      "source": "/health",
+      "destination": "http://ccee-api-alb-371008494.us-east-1.elb.amazonaws.com/health"
+    },
+    {
+      "source": "/health/:path*",
+      "destination": "http://ccee-api-alb-371008494.us-east-1.elb.amazonaws.com/health/:path*"
+    },
+    {
+      "source": "/v1/:path*",
+      "destination": "http://ccee-api-alb-371008494.us-east-1.elb.amazonaws.com/v1/:path*"
+    },
+    {
+      "source": "/executions/:path*",
+      "destination": "http://ccee-api-alb-371008494.us-east-1.elb.amazonaws.com/executions/:path*"
+    },
+    {
+      "source": "/metrics",
+      "destination": "http://ccee-api-alb-371008494.us-east-1.elb.amazonaws.com/metrics"
+    },
+    {
       "source": "/admin/observability",
       "destination": "/index.html"
     }

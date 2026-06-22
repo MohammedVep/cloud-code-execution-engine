@@ -40,7 +40,7 @@ Secure, multi-tenant, asynchronous code execution platform with Vercel-hosted re
   - AI-backed analysis mode (`AI_PROVIDER=openai`) with retries/backoff and safe heuristic fallback
 - `apps/frontend`
   - Static recruiter-facing CloudSandbox UI deployed to Vercel
-  - Defaults to the AWS API endpoint while keeping browser hosting separate from backend compute
+  - Uses Vercel rewrites as a same-origin HTTPS proxy to the AWS API, avoiding browser mixed-content blocks while keeping backend compute on AWS
 - `services/worker`
   - BullMQ queue consumer
   - Async dispatch to local Docker runner or ECS/Fargate runner tasks
