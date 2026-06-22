@@ -4,6 +4,18 @@ const envSchema = z.object({
   API_PORT: z.coerce.number().int().positive().default(8080),
   AWS_REGION: z.string().min(1).default("us-east-1"),
   REDIS_URL: z.string().url().default("redis://localhost:6379"),
+  CORS_ALLOWED_ORIGINS: z
+    .string()
+    .default(
+      [
+        "http://localhost:8080",
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "https://cloudsandbox.space",
+        "https://www.cloudsandbox.space",
+        "https://*.vercel.app"
+      ].join(",")
+    ),
   AUTH_MODE: z.enum(["api_key", "jwt", "hybrid"]).default("api_key"),
   JWT_JWKS_URL: z.preprocess(
     (value) => (typeof value === "string" && value.trim().length === 0 ? undefined : value),

@@ -45,7 +45,7 @@ const typescriptCompilerPath = "/app/services/runner/node_modules/typescript/bin
  * After adding a profile, also update:
  * - packages/common/src/index.ts SUPPORTED_LANGUAGES
  * - services/runner/Dockerfile runtime packages
- * - services/api/public/index.html editor templates
+ * - apps/frontend/src/index.html editor templates
  * - docs/enhancement-scaffold.md test checklist
  */
 export const getRuntimePlan = (

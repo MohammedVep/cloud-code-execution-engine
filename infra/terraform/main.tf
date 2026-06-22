@@ -555,6 +555,9 @@ resource "aws_ecs_task_definition" "api" {
           protocol      = "tcp"
         }
       ]
+      mountPoints    = []
+      systemControls = []
+      volumesFrom    = []
 
       readonlyRootFilesystem = true
       user                   = "1000:1000"
@@ -562,6 +565,7 @@ resource "aws_ecs_task_definition" "api" {
       linuxParameters = {
         initProcessEnabled = true
         capabilities = {
+          add  = []
           drop = ["ALL"]
         }
       }
@@ -581,6 +585,7 @@ resource "aws_ecs_task_definition" "api" {
         { name = "NODE_OPTIONS", value = var.node_options },
         { name = "UV_THREADPOOL_SIZE", value = tostring(var.uv_threadpool_size) },
         { name = "REDIS_URL", value = local.redis_url },
+        { name = "CORS_ALLOWED_ORIGINS", value = var.cors_allowed_origins },
         { name = "AUTH_MODE", value = var.auth_mode },
         { name = "JWT_JWKS_URL", value = var.jwt_jwks_url },
         { name = "JWT_ISSUER", value = var.jwt_issuer },
@@ -655,9 +660,13 @@ resource "aws_ecs_task_definition" "worker" {
 
   container_definitions = jsonencode([
     {
-      name      = "worker"
-      image     = var.worker_image
-      essential = true
+      name           = "worker"
+      image          = var.worker_image
+      essential      = true
+      portMappings   = []
+      mountPoints    = []
+      systemControls = []
+      volumesFrom    = []
 
       readonlyRootFilesystem = true
       user                   = "1000:1000"
@@ -665,6 +674,7 @@ resource "aws_ecs_task_definition" "worker" {
       linuxParameters = {
         initProcessEnabled = true
         capabilities = {
+          add  = []
           drop = ["ALL"]
         }
       }
@@ -738,9 +748,13 @@ resource "aws_ecs_task_definition" "runner" {
 
   container_definitions = jsonencode([
     {
-      name      = "runner"
-      image     = var.runner_image
-      essential = true
+      name           = "runner"
+      image          = var.runner_image
+      essential      = true
+      portMappings   = []
+      mountPoints    = []
+      systemControls = []
+      volumesFrom    = []
 
       readonlyRootFilesystem = false
       user                   = "1000:1000"
@@ -748,6 +762,7 @@ resource "aws_ecs_task_definition" "runner" {
       linuxParameters = {
         initProcessEnabled = true
         capabilities = {
+          add  = []
           drop = ["ALL"]
         }
       }
@@ -844,10 +859,14 @@ resource "aws_ecs_task_definition" "dlq_replay" {
 
   container_definitions = jsonencode([
     {
-      name      = "dlq-replay"
-      image     = var.worker_image
-      essential = true
-      command   = ["node", "scripts/replay-dlq.mjs"]
+      name           = "dlq-replay"
+      image          = var.worker_image
+      essential      = true
+      command        = ["node", "scripts/replay-dlq.mjs"]
+      portMappings   = []
+      mountPoints    = []
+      systemControls = []
+      volumesFrom    = []
 
       readonlyRootFilesystem = true
       user                   = "1000:1000"
@@ -855,6 +874,7 @@ resource "aws_ecs_task_definition" "dlq_replay" {
       linuxParameters = {
         initProcessEnabled = true
         capabilities = {
+          add  = []
           drop = ["ALL"]
         }
       }

@@ -8,7 +8,7 @@ CloudSandbox separates control-plane API operations from asynchronous execution 
 
 ```mermaid
 flowchart TD
-  A["Frontend (Browser + Monaco + SSE)"] --> B["API Service (Fastify)"]
+  A["Frontend (Vercel + Browser + Monaco + SSE)"] --> B["API Service on AWS ECS/Fargate (Fastify)"]
   B --> C["Redis + BullMQ Queue"]
   C --> D["Worker Service"]
   D --> E["CloudSandbox Runtime (Local Docker or ECS Fargate Runner)"]
@@ -21,7 +21,7 @@ flowchart TD
 ```
 
 ## Request Lifecycle
-1. User submits code from the web editor.
+1. User submits code from the Vercel-hosted web editor.
 2. API authenticates tenant and validates payload size/language/limits.
 3. API enforces per-tenant request and submit burst limits.
 4. API reserves quota (`maxConcurrentJobs`, `maxDailyJobs`) and enqueues the job.

@@ -1,7 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
 import { CloudWatchClient, PutMetricDataCommand } from "@aws-sdk/client-cloudwatch";
 import {
   DescribeScalingActivitiesCommand,
@@ -26,7 +23,7 @@ import {
   tenantRateLimitKey,
   tenantSubmitRateLimitKey
 } from "@ccee/common";
-import fastifyStatic from "@fastify/static";
+import fastifyCors from "@fastify/cors";
 import { Queue } from "bullmq";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { Redis } from "ioredis";
@@ -130,7 +127,6 @@ const dlqQueue = new Queue(config.DLQ_QUEUE_NAME, { connection: redisConnection 
 const cloudWatchClient = new CloudWatchClient({ region: config.AWS_REGION });
 const ecsClient = new ECSClient({ region: config.AWS_REGION });
 const autoScalingClient = new ApplicationAutoScalingClient({ region: config.AWS_REGION });
-const publicRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "public");
 const jwtJwks = config.JWT_JWKS_URL ? createRemoteJWKSet(new URL(config.JWT_JWKS_URL)) : null;
 
 const parseAdminKeys = (value: string): Set<string> => {
@@ -155,8 +151,42 @@ const getClusterName = (clusterArnOrName: string): string => {
   return parts[parts.length - 1] || clusterArnOrName;
 };
 
-void app.register(fastifyStatic, {
-  root: publicRoot
+const corsAllowedOrigins = config.CORS_ALLOWED_ORIGINS.split(",")
+  .map((origin) => origin.trim())
+  .filter((origin) => origin.length > 0);
+
+const isAllowedOrigin = (origin: string): boolean =>
+  corsAllowedOrigins.some((allowedOrigin) => {
+    if (allowedOrigin === origin) {
+      return true;
+    }
+
+    if (allowedOrigin.startsWith("https://*.")) {
+      const suffix = allowedOrigin.slice("https://*.".length);
+      return origin.startsWith("https://") && origin.slice("https://".length).endsWith(`.${suffix}`);
+    }
+
+    if (allowedOrigin.startsWith("http://*.")) {
+      const suffix = allowedOrigin.slice("http://*.".length);
+      return origin.startsWith("http://") && origin.slice("http://".length).endsWith(`.${suffix}`);
+    }
+
+    return false;
+  });
+
+void app.register(fastifyCors, {
+  origin: (origin, callback) => {
+    if (!origin || isAllowedOrigin(origin)) {
+      callback(null, true);
+      return;
+    }
+
+    callback(null, false);
+  },
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["authorization", "content-type", "x-api-key", "x-request-id"],
+  exposedHeaders: ["x-request-id", "x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset"],
+  maxAge: 600
 });
 
 const listJobsQuerySchema = z.object({
@@ -986,8 +1016,17 @@ app.get("/metrics", async (_request, reply) => {
   return reply.type("text/plain; version=0.0.4; charset=utf-8").send(renderPrometheusMetrics(snapshot));
 });
 
-app.get("/", async (_request, reply) => reply.sendFile("index.html"));
-app.get("/admin/observability", async (_request, reply) => reply.sendFile("index.html"));
+app.get("/", async () => ({
+  service: "cloudsandbox-api",
+  status: "ok",
+  frontend: "https://cloudsandbox.space",
+  docs: {
+    health: "/health",
+    runtimes: "/v1/runtimes",
+    submitJob: "POST /v1/jobs",
+    jobEvents: "GET /v1/jobs/:jobId/events"
+  }
+}));
 
 const adminBurstSchema = z.object({
   count: z.coerce.number().int().min(1).max(config.ADMIN_BURST_MAX).default(config.ADMIN_BURST_MAX)

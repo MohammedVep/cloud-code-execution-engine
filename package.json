@@ -3,11 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "workspaces": [
+    "apps/*",
     "services/*",
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspace @ccee/common && npm run build --workspace @ccee/api && npm run build --workspace @ccee/worker && npm run build --workspace @ccee/runner",
+    "build": "npm run build --workspace @ccee/common && npm run build --workspace @ccee/api && npm run build --workspace @ccee/worker && npm run build --workspace @ccee/runner && npm run build --workspace @ccee/frontend",
+    "build:frontend": "npm run build --workspace @ccee/frontend",
     "dev:api": "npm run dev --workspace @ccee/api",
     "dev:worker": "npm run dev --workspace @ccee/worker",
     "dev:runner": "npm run dev --workspace @ccee/runner",

@@ -1,6 +1,6 @@
 # CloudSandbox: Cloud Code Execution Engine (Mini Replit / Judge0 Style)
 
-Secure, multi-tenant, asynchronous code execution platform with recruiter-facing UI and API.
+Secure, multi-tenant, asynchronous code execution platform with Vercel-hosted recruiter UI and AWS-hosted backend services.
 
 > Distributed code execution platform with queue-based job scheduling, isolated sandboxes, resource limits, and execution observability.
 
@@ -38,7 +38,9 @@ Secure, multi-tenant, asynchronous code execution platform with recruiter-facing
   - Real-time job status stream (`GET /v1/jobs/:jobId/events`)
   - Execution analysis (`POST /v1/jobs/:jobId/analyze`)
   - AI-backed analysis mode (`AI_PROVIDER=openai`) with retries/backoff and safe heuristic fallback
-  - Recruiter UI at `/`
+- `apps/frontend`
+  - Static recruiter-facing CloudSandbox UI deployed to Vercel
+  - Defaults to the AWS API endpoint while keeping browser hosting separate from backend compute
 - `services/worker`
   - BullMQ queue consumer
   - Async dispatch to local Docker runner or ECS/Fargate runner tasks
@@ -244,7 +246,9 @@ cp .env.example .env
 Open UI:
 
 ```bash
-open http://localhost:8080/
+npm run build:frontend
+npx serve apps/frontend/dist -l 3000
+open http://localhost:3000/
 ```
 
 ## Local E2E (submit + poll + history + audit + analysis)
@@ -284,7 +288,7 @@ Stop:
 ## API summary
 
 - `GET /health`
-- `GET /` (frontend)
+- `GET /` (backend metadata)
 - `GET /v1/quotas`
 - `GET /v1/costs?days=7`
 - `POST /v1/jobs`

@@ -91,6 +91,12 @@ variable "api_desired_count" {
   default     = 1
 }
 
+variable "cors_allowed_origins" {
+  description = "Comma-separated browser origins allowed to call the API from the Vercel-hosted frontend"
+  type        = string
+  default     = "http://localhost:8080,http://localhost:3000,http://localhost:5173,https://cloudsandbox.space,https://www.cloudsandbox.space,https://*.vercel.app"
+}
+
 variable "log_retention_days" {
   description = "CloudWatch log retention for API, worker, and runner log groups"
   type        = number

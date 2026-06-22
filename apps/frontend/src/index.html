@@ -1085,6 +1085,7 @@
       const metricRuntime = document.getElementById("metric-runtime");
       const metricFailure = document.getElementById("metric-failure");
       const metricUtilization = document.getElementById("metric-utilization");
+      const defaultApiBase = "%%CLOUDSANDBOX_API_BASE_URL%%";
 
       let pollHandle = null;
       let latestJobId = null;
@@ -1107,6 +1108,8 @@
         const storedApiBase = localStorage.getItem("ccee_api_base");
         if (storedApiBase) {
           adminApiBaseInput.value = storedApiBase;
+        } else if (defaultApiBase) {
+          adminApiBaseInput.value = defaultApiBase;
         }
       }
 
