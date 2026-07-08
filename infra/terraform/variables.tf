@@ -617,20 +617,32 @@ variable "redis_node_type" {
   default     = "cache.t4g.micro"
 }
 
-variable "redis_engine_version" {
-  description = "ElastiCache Redis engine version"
+variable "redis_engine" {
+  description = "ElastiCache engine for the Redis-compatible datastore"
   type        = string
-  default     = "7.1"
+  default     = "valkey"
+}
+
+variable "redis_engine_version" {
+  description = "ElastiCache Redis-compatible engine version"
+  type        = string
+  default     = "9.1"
+}
+
+variable "redis_parameter_group_name" {
+  description = "ElastiCache parameter group for the selected Redis-compatible engine"
+  type        = string
+  default     = "default.valkey9"
 }
 
 variable "redis_num_cache_clusters" {
-  description = "Number of Redis cache clusters (1 for dev, >=2 for failover)"
+  description = "Number of Redis-compatible cache clusters (1 for dev, >=2 for failover)"
   type        = number
   default     = 1
 }
 
 variable "redis_auth_token" {
-  description = "Optional Redis AUTH token (set for production)"
+  description = "Optional Redis-compatible AUTH token (set for production)"
   type        = string
   default     = null
   sensitive   = true

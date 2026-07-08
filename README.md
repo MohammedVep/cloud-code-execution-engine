@@ -53,7 +53,7 @@ Secure, multi-tenant, asynchronous code execution platform with Vercel-hosted re
 - `packages/common`
   - Shared schemas and key conventions
 - `infra/terraform`
-  - ECS cluster/services, ALB, ElastiCache Redis, IAM, security groups
+  - ECS cluster/services, ALB, ElastiCache for Valkey, IAM, security groups
 
 ## Secure sandbox controls
 
@@ -315,7 +315,7 @@ The Terraform module provisions:
 - Worker ECS service with `EXECUTION_BACKEND=ecs`
 - ECS Application Auto Scaling target tracking on queue depth for worker service
 - Runner task definition
-- ElastiCache Redis (TLS)
+- ElastiCache for Valkey (TLS, Redis-compatible protocol)
 - IAM + SG boundaries for worker/runner/API/Redis
 - Optional VPC, subnets, NAT, and RDS PostgreSQL
 

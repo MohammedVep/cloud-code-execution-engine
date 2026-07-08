@@ -324,10 +324,10 @@ resource "aws_security_group_rule" "alb_to_api" {
 resource "aws_elasticache_replication_group" "redis" {
   replication_group_id       = "${local.name_prefix}-redis"
   description                = "${local.name_prefix} job and audit datastore"
-  engine                     = "redis"
+  engine                     = var.redis_engine
   engine_version             = var.redis_engine_version
   node_type                  = var.redis_node_type
-  parameter_group_name       = "default.redis7"
+  parameter_group_name       = var.redis_parameter_group_name
   num_cache_clusters         = var.redis_num_cache_clusters
   subnet_group_name          = aws_elasticache_subnet_group.redis.name
   security_group_ids         = [aws_security_group.redis.id]

@@ -9,7 +9,7 @@ CloudSandbox separates control-plane API operations from asynchronous execution 
 ```mermaid
 flowchart TD
   A["Frontend (Vercel + Browser + Monaco + SSE)"] --> B["API Service on AWS ECS/Fargate (Fastify)"]
-  B --> C["Redis + BullMQ Queue"]
+  B --> C["ElastiCache for Valkey + BullMQ Queue"]
   C --> D["Worker Service"]
   D --> E["CloudSandbox Runtime (Local Docker or ECS Fargate Runner)"]
   E --> C
