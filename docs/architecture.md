@@ -8,7 +8,11 @@ CloudSandbox separates control-plane API operations from asynchronous execution 
 
 ```mermaid
 flowchart TD
-  A["Frontend (Vercel + Browser + Monaco + SSE)"] --> B["API Service on AWS ECS/Fargate (Fastify)"]
+  A["Frontend (Vercel + Browser + Monaco + SSE)"] --> G["API Gateway HTTP API"]
+  G -- "$default via VPC Link + Cloud Map" --> B["API Service on AWS ECS/Fargate (Fastify)"]
+  G -. "POST /wake" .-> W["Lambda Sleep Controller"]
+  W -. "Desired count 0 or 1" .-> B
+  W -. "Snapshot, delete, restore, publish endpoint" .-> C
   B --> C["ElastiCache for Valkey + BullMQ Queue"]
   C --> D["Worker Service"]
   D --> E["CloudSandbox Runtime (Local Docker or ECS Fargate Runner)"]
@@ -21,6 +25,7 @@ flowchart TD
 ```
 
 ## Request Lifecycle
+0. Static page load makes no AWS request. An authenticated action calls the dedicated API Gateway wake route. If the cache is hibernating, the controller restores an available protected snapshot and publishes its endpoint before starting the API; the browser renews the wake lease while waiting for `/health`.
 1. User submits code from the Vercel-hosted web editor.
 2. API authenticates tenant and validates payload size/language/limits.
 3. API enforces per-tenant request and submit burst limits.

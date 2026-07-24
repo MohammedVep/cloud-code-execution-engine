@@ -16,6 +16,18 @@
   - CloudWatch alarm on `CCEE/PendingJobsScaleSignal > 0`
   - Step scaling policy forces exact desired count `1` so scale-from-zero recovers quickly.
 
+## API Compute Sleep and On-Demand Wake
+
+The API ECS service also scales from `1` to `0`, independently of worker autoscaling. Static public and admin pages make no backend requests at startup. An explicit authenticated action calls `POST /wake`, waits for `/health`, and then sends the original request once.
+
+The Lambda controller validates `x-api-key` against digests derived from configured tenant/admin keys and records a renewable wake lease in SSM. EventBridge checks every five minutes. Raw API Gateway traffic is not a lease. Sleep requires zero API/worker counts, a present zero queue datapoint, no active standalone or transitioning ECS task, and two clear observations at least 60 seconds apart. AWS observation failures block destructive work.
+
+When cache hibernation is enabled, the controller takes an ElastiCache manual snapshot from the unique primary member, waits for it to become available, rechecks every safety gate, and then deletes the replication group. A wake restores only from a protected available snapshot, verifies the updated Redis URL in encrypted SSM, and starts ECS afterward. API, worker, runner, and DLQ definitions resolve that runtime URL through ECS secret injection.
+
+With the defaults, the API becomes eligible for sleep after 900 seconds. Cache ownership requires a one-time, non-destructive Terraform state handoff before hibernation is enabled. The complete deployment, safety, rollback, and verification procedure is in [the sleep and cache hibernation runbook](sleep-mode.md).
+
+> Sleep mode is not whole-account teardown. API Gateway, its VPC Link, Cloud Map, Lambda/EventBridge, security groups, subnets, snapshots, logs/images, and optional RDS remain provisioned. NAT gateways, EIPs, and interface endpoints remain billable when enabled. The former always-on ALB is no longer part of this path.
+
 ## Key Metrics
 - Jobs submitted per minute
 - Queue depth (`waiting`)

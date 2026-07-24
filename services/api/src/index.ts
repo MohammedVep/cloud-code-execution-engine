@@ -1347,6 +1347,10 @@ app.post("/v1/admin/simulate/burst", async (request, reply) => {
     await Promise.all(tasks);
   }
 
+  // Publish immediately so a zero-task worker service does not have to wait
+  // for the next periodic queue-depth sample before scaling out.
+  void publishQueueDepthMetric();
+
   await appendAuditEvent(redis, config.AUDIT_STREAM_KEY, {
     actor: "api",
     action: "admin_burst_submitted",
@@ -1590,6 +1594,10 @@ const submitExecutionHandler = async (request: FastifyRequest, reply: FastifyRep
         age: config.JOB_TTL_SECONDS
       }
     });
+
+    // The worker service can be at desired count zero while the API is awake.
+    // Emit the wake signal as soon as work is committed to the queue.
+    void publishQueueDepthMetric();
   } catch (error) {
     await rollbackReservedQuota(redis, tenant.tenantId, reservation.dateKey);
     await redis.del(key);

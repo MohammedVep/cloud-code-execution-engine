@@ -118,6 +118,25 @@
         background: var(--ok);
       }
 
+      .health-pill.sleeping {
+        background: rgba(71, 96, 102, 0.12);
+        color: var(--ink-muted);
+      }
+
+      .health-pill.sleeping::before {
+        background: #8ea2a0;
+      }
+
+      .health-pill.waking {
+        background: rgba(179, 95, 0, 0.15);
+        color: var(--warn);
+      }
+
+      .health-pill.waking::before {
+        background: var(--warn);
+        animation: backend-waking 1.1s ease-in-out infinite;
+      }
+
       .health-pill.error {
         background: rgba(194, 52, 52, 0.12);
         color: var(--error);
@@ -125,6 +144,13 @@
 
       .health-pill.error::before {
         background: var(--error);
+      }
+
+      @keyframes backend-waking {
+        50% {
+          opacity: 0.35;
+          transform: scale(0.72);
+        }
       }
 
       .health-summary {
@@ -740,14 +766,12 @@
         </div>
         <div style="display: flex; align-items: center; gap: 0.6rem">
           <div class="health-summary" id="health-summary">
-            <strong>Autoscale Lens</strong>
-            <span>Queue depth: --</span>
-            <span>Target per worker: --</span>
-            <span class="muted">Scale-from-zero: API publishes queue depth</span>
-            <span class="muted">Last update: --</span>
+            <strong>Sleep Mode</strong>
+            <span>Backend wakes for authenticated actions.</span>
+            <span class="muted">Refresh checks status without waking it.</span>
           </div>
-          <span id="health-pill" class="health-pill">Checking backend</span>
-          <button id="refresh-health" class="btn secondary" type="button">Refresh</button>
+          <span id="health-pill" class="health-pill sleeping" data-backend-state role="status" aria-live="polite">Sleeping</span>
+          <button id="refresh-health" class="btn secondary" type="button">Check Status</button>
         </div>
       </header>
 
@@ -756,8 +780,11 @@
           <div>
             <span class="kicker mono">Internal SRE Dashboard</span>
             <h2>Observability Control Plane</h2>
-            <p class="admin-muted">Live queue depth, DLQ size, and ECS worker capacity. Polling every 3s.</p>
-            <span id="admin-breach-badge" class="breach-badge">Target Stable</span>
+            <p class="admin-muted">Queue depth, DLQ size, and ECS worker capacity load on demand so the backend can sleep.</p>
+            <div class="actions">
+              <span id="admin-health-pill" class="health-pill sleeping" data-backend-state role="status" aria-live="polite">Sleeping</span>
+              <span id="admin-breach-badge" class="breach-badge">Target Stable</span>
+            </div>
           </div>
           <div class="admin-controls">
             <label>
@@ -824,7 +851,7 @@
               <span>Firecracker microVM isolation per run</span>
             </div>
             <div class="stat">
-              <strong>BullMQ + Redis</strong>
+              <strong>BullMQ + Valkey</strong>
               <span>Queue depth drives autoscaling</span>
             </div>
             <div class="stat">
@@ -867,7 +894,7 @@
             </div>
             <div class="card">
               <h4>4. Shared Data Plane</h4>
-              <p>Redis stores queue state, quota counters, and append-only audit events for traceability.</p>
+              <p>Valkey stores queue state, quota counters, and append-only audit events for traceability.</p>
             </div>
           </div>
         </article>
@@ -912,8 +939,20 @@
           <h2 class="section-title">CloudSandbox Runtime Matrix</h2>
           <div id="runtime-cards" class="cards">
             <div class="card">
-              <h4>Loading runtimes</h4>
-              <p>Fetching runtime catalog from the API.</p>
+              <h4>JavaScript & TypeScript</h4>
+              <p>Node.js runtimes with bounded execution and output capture.</p>
+            </div>
+            <div class="card">
+              <h4>Python & Go</h4>
+              <p>Isolated interpreted and compiled workloads.</p>
+            </div>
+            <div class="card">
+              <h4>Java & C#</h4>
+              <p>Managed runtimes with per-job memory and timeout controls.</p>
+            </div>
+            <div class="card">
+              <h4>C++</h4>
+              <p>Compiled native execution inside a hardened sandbox.</p>
             </div>
           </div>
         </article>
@@ -940,7 +979,7 @@
           </div>
           <div class="status-box">
             <strong>Distributed Stack</strong>
-            <pre id="observability-json">Loading architecture summary...</pre>
+            <pre id="observability-json">Metrics load after an authenticated backend interaction.</pre>
           </div>
         </article>
       </section>
@@ -1043,7 +1082,6 @@
 
     <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js"></script>
     <script>
-      const healthPill = document.getElementById("health-pill");
       const refreshHealthBtn = document.getElementById("refresh-health");
       const healthSummary = document.getElementById("health-summary");
       const form = document.getElementById("job-form");
@@ -1079,17 +1117,27 @@
       const adminScalingTarget = document.getElementById("admin-scaling-target");
       const adminBreachBadge = document.getElementById("admin-breach-badge");
       const adminActivityList = document.getElementById("admin-activity-list");
-      const runtimeCards = document.getElementById("runtime-cards");
       const observabilityJson = document.getElementById("observability-json");
       const metricJps = document.getElementById("metric-jps");
       const metricRuntime = document.getElementById("metric-runtime");
       const metricFailure = document.getElementById("metric-failure");
       const metricUtilization = document.getElementById("metric-utilization");
       const defaultApiBase = "%%CLOUDSANDBOX_API_BASE_URL%%";
+      const configuredWakeUrl = "%%CLOUDSANDBOX_WAKE_URL%%".trim();
+      const backendStateIndicators = document.querySelectorAll("[data-backend-state]");
+      const WAKE_TIMEOUT_MS = 20 * 60_000;
+      const WAKE_LEASE_REFRESH_MS = 45_000;
+      const WAKE_MAX_ATTEMPTS = 30;
+      const WAKE_INITIAL_POLL_MS = 2_000;
+      const WAKE_MAX_POLL_MS = 15_000;
+      const REQUEST_TIMEOUT_MS = 10_000;
+      const HEALTHY_CACHE_MS = 30_000;
 
       let pollHandle = null;
       let latestJobId = null;
       let monacoEditor = null;
+      let backendWakePromise = null;
+      let lastBackendHealthyAt = 0;
 
       const apiKeyInput = document.getElementById("api-key");
       const storedKey = localStorage.getItem("ccee_api_key");
@@ -1105,9 +1153,8 @@
       }
 
       if (adminApiBaseInput) {
-        const legacyAwsHttpBase = ["http:", "", "ccee-api-alb-371008494.us-east-1.elb.amazonaws.com"].join("/");
         const storedApiBase = localStorage.getItem("ccee_api_base");
-        if (window.location.protocol === "https:" && storedApiBase?.startsWith(legacyAwsHttpBase)) {
+        if (window.location.protocol === "https:" && storedApiBase?.startsWith("http://")) {
           localStorage.removeItem("ccee_api_base");
           adminApiBaseInput.value = defaultApiBase;
         } else if (storedApiBase) {
@@ -1210,6 +1257,10 @@
       };
 
       const format = (data) => JSON.stringify(data, null, 2);
+      const interactionError = (error) => ({
+        error: "backend_unavailable",
+        detail: error instanceof Error ? error.message : "Unknown backend error"
+      });
 
       const getApiBase = () => {
         if (!adminApiBaseInput) {
@@ -1238,95 +1289,281 @@
 
       const getApiKey = () => apiKeyInput.value.trim();
 
-      const refreshHealth = async () => {
-        healthPill.className = "health-pill";
-        healthPill.textContent = "Checking backend";
-
-        try {
-          const { res } = await fetchJson("/health");
-          if (!res.ok) {
-            throw new Error(`health_failed_${res.status}`);
-          }
-
-          healthPill.className = "health-pill ok";
-          healthPill.textContent = "Backend Healthy";
-        } catch (error) {
-          healthPill.className = "health-pill error";
-          healthPill.textContent = "Backend Unreachable";
-        }
-      };
-
-      const refreshHealthSummary = async () => {
+      const setHealthSummary = (title, lines) => {
         if (!healthSummary) {
           return;
         }
 
-        try {
-          const { res, payload } = await fetchJson("/health/summary");
-          if (!res.ok) {
-            throw new Error(`health_summary_failed_${res.status}`);
+        const heading = document.createElement("strong");
+        heading.textContent = title;
+        const content = lines.map((line) => {
+          const element = document.createElement("span");
+          element.textContent = line;
+          return element;
+        });
+        healthSummary.replaceChildren(heading, ...content);
+      };
+
+      const setBackendState = (state) => {
+        const presentation = {
+          sleeping: {
+            className: "sleeping",
+            label: "Sleeping",
+            title: "Sleep Mode",
+            lines: ["Backend wakes for authenticated actions.", "Status checks never trigger a wake-up."]
+          },
+          checking: {
+            className: "sleeping",
+            label: "Checking status…",
+            title: "Checking Status",
+            lines: ["Reading current health only.", "This check will not wake the backend."]
+          },
+          waking: {
+            className: "waking",
+            label: "Waking…",
+            title: "Waking Backend",
+            lines: ["Starting the API service.", "Your authenticated action will continue automatically."]
+          },
+          healthy: {
+            className: "ok",
+            label: "Healthy",
+            title: "Backend Healthy",
+            lines: ["The API is ready.", "Authenticated actions can continue now."]
           }
-          const pending = payload?.queue?.pending ?? "--";
-          const target = payload?.autoscaling?.queueDepthTarget ?? "--";
-          const updatedAt = payload?.updatedAt ? new Date(payload.updatedAt).toLocaleTimeString() : "--";
-          healthSummary.innerHTML = `
-            <strong>Autoscale Lens</strong>
-            <span>Queue depth: ${pending}</span>
-            <span>Target per worker: ${target}</span>
-            <span class="muted">Last update: ${updatedAt}</span>
-          `;
-        } catch (error) {
-          healthSummary.innerHTML = `
-            <strong>Autoscale Lens</strong>
-            <span>Queue depth: unavailable</span>
-            <span>Target per worker: --</span>
-            <span class="muted">Last update: --</span>
-          `;
+        }[state];
+
+        if (!presentation) {
+          return;
         }
+
+        backendStateIndicators.forEach((indicator) => {
+          indicator.className = `health-pill ${presentation.className}`;
+          indicator.textContent = presentation.label;
+        });
+        setHealthSummary(presentation.title, presentation.lines);
+      };
+
+      const fetchWithTimeout = async (url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) => {
+        const controller = new AbortController();
+        const timeoutHandle = window.setTimeout(() => controller.abort(), timeoutMs);
+
+        try {
+          return await fetch(url, {
+            ...options,
+            signal: controller.signal
+          });
+        } finally {
+          window.clearTimeout(timeoutHandle);
+        }
+      };
+
+      const checkBackendHealth = async (timeoutMs = REQUEST_TIMEOUT_MS) => {
+        const base = getApiBase();
+
+        try {
+          const res = await fetchWithTimeout(`${base}/health`, {
+            cache: "no-store"
+          }, timeoutMs);
+          return res.ok;
+        } catch (error) {
+          return false;
+        }
+      };
+
+      const markBackendHealthy = () => {
+        lastBackendHealthyAt = Date.now();
+        setBackendState("healthy");
+      };
+
+      const wait = (durationMs) => new Promise((resolve) => window.setTimeout(resolve, durationMs));
+
+      const wakeBackend = async (apiKey) => {
+        lastBackendHealthyAt = 0;
+        setBackendState("waking");
+        const deadline = Date.now() + WAKE_TIMEOUT_MS;
+
+        if (!configuredWakeUrl) {
+          if (await checkBackendHealth()) {
+            markBackendHealthy();
+            return;
+          }
+
+          setBackendState("sleeping");
+          throw new Error("Backend is sleeping, but CLOUDSANDBOX_WAKE_URL is not configured for this build.");
+        }
+
+        const requestWakeLease = async (timeoutMs) => {
+          let wakeResponse;
+          try {
+            wakeResponse = await fetchWithTimeout(configuredWakeUrl, {
+              method: "POST",
+              headers: {
+                "x-api-key": apiKey
+              },
+              cache: "no-store"
+            }, timeoutMs);
+          } catch (error) {
+            return { transient: true, cachePhase: "" };
+          }
+
+          let wakePayload = null;
+          try {
+            wakePayload = await wakeResponse.json();
+          } catch (error) {
+            wakePayload = null;
+          }
+
+          const rawCachePhase = wakePayload?.cachePhase;
+          const cachePhase = typeof rawCachePhase === "string" && /^[a-z0-9_-]{1,48}$/i.test(rawCachePhase)
+            ? rawCachePhase
+            : "";
+
+          if ([401, 403].includes(wakeResponse.status)) {
+            throw new Error("Backend wake request was not authorized. Check the API key and try again.");
+          }
+
+          if (wakeResponse.status === 429 || wakeResponse.status >= 500) {
+            return { transient: true, cachePhase };
+          }
+
+          if (!wakeResponse.ok) {
+            throw new Error(`Backend wake request failed (${wakeResponse.status}). Please try again.`);
+          }
+
+          return { transient: false, cachePhase };
+        };
+
+        const showWakeProgress = (cachePhase, transientFailure = false) => {
+          const phaseLine = cachePhase
+            ? `Cache phase: ${cachePhase}.`
+            : "Cache restore status is pending.";
+          const leaseLine = transientFailure
+            ? "The wake endpoint is temporarily unavailable; retrying automatically."
+            : "Keeping the authenticated wake lease active until the API is ready.";
+          setHealthSummary("Waking Backend", [phaseLine, leaseLine]);
+        };
+
+        let pollDelayMs = WAKE_INITIAL_POLL_MS;
+        let wakeAttempts = 0;
+        let nextWakeAttemptAt = 0;
+        let transientWakeFailures = 0;
+        let cachePhase = "";
+
+        while (Date.now() < deadline) {
+          if (Date.now() >= nextWakeAttemptAt) {
+            if (wakeAttempts >= WAKE_MAX_ATTEMPTS) {
+              setBackendState("sleeping");
+              throw new Error("Backend wake-up could not maintain its wake lease. Please try again.");
+            }
+
+            wakeAttempts += 1;
+            let wakeLease;
+            try {
+              const wakeTimeoutMs = Math.min(REQUEST_TIMEOUT_MS, Math.max(deadline - Date.now(), 1));
+              wakeLease = await requestWakeLease(wakeTimeoutMs);
+            } catch (error) {
+              setBackendState("sleeping");
+              throw error;
+            }
+
+            cachePhase = wakeLease.cachePhase || cachePhase;
+            if (wakeLease.transient) {
+              transientWakeFailures += 1;
+              const retryDelayMs = Math.min(
+                WAKE_LEASE_REFRESH_MS,
+                WAKE_INITIAL_POLL_MS * (2 ** Math.min(transientWakeFailures - 1, 5))
+              );
+              nextWakeAttemptAt = Date.now() + retryDelayMs;
+            } else {
+              transientWakeFailures = 0;
+              nextWakeAttemptAt = Date.now() + WAKE_LEASE_REFRESH_MS;
+            }
+            showWakeProgress(cachePhase, wakeLease.transient);
+          }
+
+          const healthTimeoutMs = Math.min(REQUEST_TIMEOUT_MS, Math.max(deadline - Date.now(), 1));
+          if (await checkBackendHealth(healthTimeoutMs)) {
+            markBackendHealthy();
+            return;
+          }
+
+          const remainingMs = deadline - Date.now();
+          if (remainingMs <= 0) {
+            break;
+          }
+
+          const untilNextWakeMs = Math.max(nextWakeAttemptAt - Date.now(), 1);
+          await wait(Math.min(pollDelayMs, untilNextWakeMs, remainingMs));
+          pollDelayMs = Math.min(Math.round(pollDelayMs * 1.5), WAKE_MAX_POLL_MS);
+        }
+
+        setBackendState("sleeping");
+        throw new Error("Backend wake-up timed out after 20 minutes. Please try again.");
+      };
+
+      const ensureBackendAwake = (apiKey) => {
+        if (!apiKey) {
+          return Promise.reject(new Error("Set API key first."));
+        }
+
+        if (Date.now() - lastBackendHealthyAt < HEALTHY_CACHE_MS) {
+          setBackendState("healthy");
+          return Promise.resolve();
+        }
+
+        if (!backendWakePromise) {
+          backendWakePromise = wakeBackend(apiKey).finally(() => {
+            backendWakePromise = null;
+          });
+        }
+
+        return backendWakePromise;
+      };
+
+      const fetchAuthenticatedJson = async (url, apiKey, options = {}) => {
+        await ensureBackendAwake(apiKey);
+
+        const headers = new Headers(options.headers || {});
+        headers.set("x-api-key", apiKey);
+
+        try {
+          const result = await fetchJson(url, {
+            ...options,
+            headers
+          });
+          if ([502, 503, 504].includes(result.res.status)) {
+            lastBackendHealthyAt = 0;
+            setBackendState("sleeping");
+          } else {
+            setBackendState("healthy");
+          }
+          return result;
+        } catch (error) {
+          lastBackendHealthyAt = 0;
+          setBackendState("sleeping");
+          throw error;
+        }
+      };
+
+      const refreshHealth = async () => {
+        refreshHealthBtn.disabled = true;
+        setBackendState("checking");
+
+        if (await checkBackendHealth()) {
+          markBackendHealthy();
+        } else if (backendWakePromise) {
+          setBackendState("waking");
+        } else {
+          lastBackendHealthyAt = 0;
+          setBackendState("sleeping");
+        }
+
+        refreshHealthBtn.disabled = false;
       };
 
       const toNumber = (value, fallback = 0) => {
         const number = Number(value);
         return Number.isFinite(number) ? number : fallback;
-      };
-
-      const escapeHtml = (value) =>
-        String(value)
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;")
-          .replace(/"/g, "&quot;");
-
-      const loadRuntimes = async () => {
-        if (!runtimeCards) {
-          return;
-        }
-
-        try {
-          const { res, payload } = await fetchJson("/v1/runtimes");
-          if (!res.ok) {
-            throw new Error(`runtimes_failed_${res.status}`);
-          }
-
-          runtimeCards.innerHTML = (payload.runtimes || [])
-            .map(
-              (runtime) => `
-                <div class="card">
-                  <h4>${escapeHtml(runtime.displayName)}</h4>
-                  <p><strong>${escapeHtml(runtime.runtime)}</strong></p>
-                  <p>${escapeHtml((runtime.pipeline || []).join(" -> "))}</p>
-                </div>
-              `
-            )
-            .join("");
-        } catch (error) {
-          runtimeCards.innerHTML = `
-            <div class="card">
-              <h4>Runtime catalog unavailable</h4>
-              <p>The API did not return language runtime metadata.</p>
-            </div>
-          `;
-        }
       };
 
       const loadObservabilitySummary = async () => {
@@ -1431,12 +1668,17 @@
 
         localStorage.setItem("ccee_admin_key", adminKey);
         localStorage.setItem("ccee_api_base", getApiBase());
+        adminLog.textContent = "Waking backend if needed, then loading metrics...";
 
-        const { res, payload } = await fetchJson("/v1/admin/metrics", {
-          headers: {
-            "x-api-key": adminKey
-          }
-        });
+        let response;
+        try {
+          response = await fetchAuthenticatedJson("/v1/admin/metrics", adminKey);
+        } catch (error) {
+          adminLog.textContent = format(interactionError(error));
+          return;
+        }
+
+        const { res, payload } = response;
 
         if (!res.ok) {
           adminLog.textContent = `metrics_error ${res.status}: ${format(payload)}`;
@@ -1487,14 +1729,21 @@
         }
 
         adminLog.textContent = "Submitting burst to queue...";
-        const { res, payload } = await fetchJson("/v1/admin/simulate/burst", {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-api-key": adminKey
-          },
-          body: JSON.stringify({ count: 1000 })
-        });
+        let response;
+        try {
+          response = await fetchAuthenticatedJson("/v1/admin/simulate/burst", adminKey, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json"
+            },
+            body: JSON.stringify({ count: 1000 })
+          });
+        } catch (error) {
+          adminLog.textContent = format(interactionError(error));
+          return;
+        }
+
+        const { res, payload } = response;
 
         if (!res.ok) {
           adminLog.textContent = `burst_error ${res.status}: ${format(payload)}`;
@@ -1517,12 +1766,17 @@
         }
 
         adminLog.textContent = "Triggering DLQ replay task...";
-        const { res, payload } = await fetchJson("/v1/admin/runbook/dlq", {
-          method: "POST",
-          headers: {
-            "x-api-key": adminKey
-          }
-        });
+        let response;
+        try {
+          response = await fetchAuthenticatedJson("/v1/admin/runbook/dlq", adminKey, {
+            method: "POST"
+          });
+        } catch (error) {
+          adminLog.textContent = format(interactionError(error));
+          return;
+        }
+
+        const { res, payload } = response;
 
         if (!res.ok) {
           adminLog.textContent = `runbook_error ${res.status}: ${format(payload)}`;
@@ -1540,13 +1794,13 @@
           return;
         }
 
-        const { payload } = await fetchJson("/v1/quotas", {
-          headers: {
-            "x-api-key": apiKey
-          }
-        });
-
-        quotaJson.textContent = format(payload);
+        quotaJson.textContent = "Waking backend if needed...";
+        try {
+          const { payload } = await fetchAuthenticatedJson("/v1/quotas", apiKey);
+          quotaJson.textContent = format(payload);
+        } catch (error) {
+          quotaJson.textContent = format(interactionError(error));
+        }
       };
 
       const loadHistory = async () => {
@@ -1556,13 +1810,13 @@
           return;
         }
 
-        const { payload } = await fetchJson("/v1/jobs?limit=10", {
-          headers: {
-            "x-api-key": apiKey
-          }
-        });
-
-        historyJson.textContent = format(payload);
+        historyJson.textContent = "Waking backend if needed...";
+        try {
+          const { payload } = await fetchAuthenticatedJson("/v1/jobs?limit=10", apiKey);
+          historyJson.textContent = format(payload);
+        } catch (error) {
+          historyJson.textContent = format(interactionError(error));
+        }
       };
 
       const loadAudit = async () => {
@@ -1572,13 +1826,13 @@
           return;
         }
 
-        const { payload } = await fetchJson("/v1/audit?limit=12", {
-          headers: {
-            "x-api-key": apiKey
-          }
-        });
-
-        auditJson.textContent = format(payload);
+        auditJson.textContent = "Waking backend if needed...";
+        try {
+          const { payload } = await fetchAuthenticatedJson("/v1/audit?limit=12", apiKey);
+          auditJson.textContent = format(payload);
+        } catch (error) {
+          auditJson.textContent = format(interactionError(error));
+        }
       };
 
       const analyzeLatest = async () => {
@@ -1593,15 +1847,15 @@
           return;
         }
 
-        analysisJson.textContent = "Generating analysis...";
-        const { payload } = await fetchJson(`/v1/jobs/${latestJobId}/analyze`, {
-          method: "POST",
-          headers: {
-            "x-api-key": apiKey
-          }
-        });
-
-        analysisJson.textContent = format(payload);
+        analysisJson.textContent = "Waking backend if needed, then generating analysis...";
+        try {
+          const { payload } = await fetchAuthenticatedJson(`/v1/jobs/${latestJobId}/analyze`, apiKey, {
+            method: "POST"
+          });
+          analysisJson.textContent = format(payload);
+        } catch (error) {
+          analysisJson.textContent = format(interactionError(error));
+        }
       };
 
       const streamJobEvents = async (id, apiKey) => {
@@ -1730,15 +1984,14 @@
         };
 
         setStatus("queued");
-        resultJson.textContent = "Submitting job...";
+        resultJson.textContent = "Waking backend if needed, then submitting job...";
         analysisJson.textContent = "Run complete first, then click Analyze Latest.";
 
         try {
-          const { res, payload } = await fetchJson("/v1/jobs", {
+          const { res, payload } = await fetchAuthenticatedJson("/v1/jobs", apiKey, {
             method: "POST",
             headers: {
-              "content-type": "application/json",
-              "x-api-key": apiKey
+              "content-type": "application/json"
             },
             body: JSON.stringify(body)
           });
@@ -1785,7 +2038,6 @@
 
       refreshHealthBtn.addEventListener("click", () => {
         refreshHealth();
-        refreshHealthSummary();
       });
       loadQuotasBtn.addEventListener("click", loadQuotas);
       loadHistoryBtn.addEventListener("click", loadHistory);
@@ -1809,22 +2061,12 @@
         if (adminDashboard) {
           adminDashboard.classList.remove("hidden");
         }
-        refreshAdminMetrics();
-        setInterval(refreshAdminMetrics, 3000);
       } else if (adminDashboard) {
         adminDashboard.classList.add("hidden");
       }
 
       if (!isAdminRoute) {
         initMonacoEditor();
-        refreshHealth();
-        refreshHealthSummary();
-        loadRuntimes();
-        loadObservabilitySummary();
-        setInterval(loadObservabilitySummary, 5000);
-        loadQuotas();
-        loadHistory();
-        loadAudit();
       }
     </script>
   </body>

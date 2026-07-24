@@ -7,9 +7,13 @@ dist
 !.env.example
 *.tsbuildinfo
 .DS_Store
+.vercel/
+backend.*.hcl
 terraform.tfstate
 terraform.tfstate.backup
 .terraform/
 *.tfvars
 infra/terraform/tfplan*
 infra/terraform/deploy*.plan
+__pycache__/
+*.py[cod]

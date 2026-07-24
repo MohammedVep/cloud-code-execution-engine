@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "dev": "npm run build && npx serve dist"
+    "dev": "npm run build && npx serve dist",
+    "test": "node --test scripts/wake-flow.test.mjs"
   }
 }

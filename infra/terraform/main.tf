@@ -19,6 +19,13 @@ locals {
     var.tags
   )
 
+  cache_replication_group_id  = "${local.name_prefix}-redis"
+  cache_replication_group_arn = "arn:${data.aws_partition.current.partition}:elasticache:${var.aws_region}:${data.aws_caller_identity.current.account_id}:replicationgroup:${local.cache_replication_group_id}"
+  cache_controller_tags = merge(local.tags, {
+    Project   = var.project_name
+    ManagedBy = "ccee-sleep-controller"
+  })
+
   runner_task_sizes = {
     small = {
       cpu    = var.runner_small_cpu
@@ -34,7 +41,12 @@ locals {
     }
   }
 
-  redis_url = var.redis_auth_token == null ? "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379" : "rediss://:${urlencode(var.redis_auth_token)}@${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379"
+  # In hibernation mode the controller is the sole replication-group owner and
+  # replaces this placeholder in SSM before starting ECS. Keeping the endpoint
+  # out of Terraform prevents an ordinary plan from recreating an empty cache
+  # while the controller-owned group is asleep.
+  redis_bootstrap_endpoint = var.redis_hibernation_enabled ? "cache-pending.invalid" : aws_elasticache_replication_group.redis[0].primary_endpoint_address
+  redis_url                = var.redis_auth_token == null ? "rediss://${local.redis_bootstrap_endpoint}:6379" : "rediss://:${urlencode(var.redis_auth_token)}@${local.redis_bootstrap_endpoint}:6379"
 }
 
 resource "aws_vpc" "main" {
@@ -133,7 +145,7 @@ resource "aws_ecs_cluster" "this" {
 
   setting {
     name  = "containerInsights"
-    value = "enabled"
+    value = "disabled"
   }
 
   tags = local.tags
@@ -173,38 +185,12 @@ resource "aws_elasticache_subnet_group" "redis" {
   subnet_ids = local.private_subnet_ids
 }
 
-resource "aws_security_group" "api_alb" {
-  name        = "${local.name_prefix}-api-alb-sg"
-  description = "Public ALB security group"
-  vpc_id      = local.vpc_id
-
-  tags = local.tags
-}
-
-resource "aws_security_group_rule" "api_alb_ingress_http" {
-  type              = "ingress"
-  security_group_id = aws_security_group.api_alb.id
-  protocol          = "tcp"
-  from_port         = 80
-  to_port           = 80
-  cidr_blocks       = ["0.0.0.0/0"]
-}
-
 resource "aws_security_group" "api" {
   name        = "${local.name_prefix}-api-sg"
   description = "API tasks"
   vpc_id      = local.vpc_id
 
   tags = local.tags
-}
-
-resource "aws_security_group_rule" "api_ingress_from_alb" {
-  type                     = "ingress"
-  security_group_id        = aws_security_group.api.id
-  source_security_group_id = aws_security_group.api_alb.id
-  protocol                 = "tcp"
-  from_port                = 8080
-  to_port                  = 8080
 }
 
 resource "aws_security_group" "worker" {
@@ -312,17 +298,9 @@ resource "aws_security_group_rule" "redis_from_runner" {
   to_port                  = 6379
 }
 
-resource "aws_security_group_rule" "alb_to_api" {
-  type                     = "egress"
-  security_group_id        = aws_security_group.api_alb.id
-  source_security_group_id = aws_security_group.api.id
-  protocol                 = "tcp"
-  from_port                = 8080
-  to_port                  = 8080
-}
-
 resource "aws_elasticache_replication_group" "redis" {
-  replication_group_id       = "${local.name_prefix}-redis"
+  count                      = var.redis_hibernation_enabled ? 0 : 1
+  replication_group_id       = local.cache_replication_group_id
   description                = "${local.name_prefix} job and audit datastore"
   engine                     = var.redis_engine
   engine_version             = var.redis_engine_version
@@ -351,6 +329,23 @@ resource "aws_iam_role" "task_execution" {
 resource "aws_iam_role_policy_attachment" "task_execution_managed" {
   role       = aws_iam_role.task_execution.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+resource "aws_iam_role_policy" "task_execution_redis_url" {
+  name = "${local.name_prefix}-task-exec-redis-url"
+  role = aws_iam_role.task_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "ReadCurrentRedisUrl"
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameters"]
+        Resource = aws_ssm_parameter.redis_url.arn
+      }
+    ]
+  })
 }
 
 resource "aws_iam_role" "api_task" {
@@ -488,47 +483,6 @@ data "aws_iam_policy_document" "ecs_tasks_assume_role" {
   }
 }
 
-resource "aws_lb" "api" {
-  name               = "${local.name_prefix}-api-alb"
-  internal           = false
-  load_balancer_type = "application"
-  security_groups    = [aws_security_group.api_alb.id]
-  subnets            = local.public_subnet_ids
-
-  tags = local.tags
-}
-
-resource "aws_lb_target_group" "api" {
-  name        = "${local.name_prefix}-api-tg"
-  port        = 8080
-  protocol    = "HTTP"
-  target_type = "ip"
-  vpc_id      = local.vpc_id
-
-  health_check {
-    enabled             = true
-    healthy_threshold   = 2
-    unhealthy_threshold = 3
-    interval            = 15
-    timeout             = 5
-    path                = "/health"
-    matcher             = "200"
-  }
-
-  tags = local.tags
-}
-
-resource "aws_lb_listener" "api_http" {
-  load_balancer_arn = aws_lb.api.arn
-  port              = 80
-  protocol          = "HTTP"
-
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.api.arn
-  }
-}
-
 resource "aws_ecs_task_definition" "api" {
   family                   = "${local.name_prefix}-api"
   requires_compatibilities = ["FARGATE"]
@@ -584,7 +538,6 @@ resource "aws_ecs_task_definition" "api" {
         { name = "AWS_REGION", value = var.aws_region },
         { name = "NODE_OPTIONS", value = var.node_options },
         { name = "UV_THREADPOOL_SIZE", value = tostring(var.uv_threadpool_size) },
-        { name = "REDIS_URL", value = local.redis_url },
         { name = "CORS_ALLOWED_ORIGINS", value = var.cors_allowed_origins },
         { name = "AUTH_MODE", value = var.auth_mode },
         { name = "JWT_JWKS_URL", value = var.jwt_jwks_url },
@@ -638,10 +591,15 @@ resource "aws_ecs_task_definition" "api" {
         { name = "TENANT_POLICIES_JSON", value = var.tenant_policies_json },
         { name = "TENANT_API_KEYS_JSON", value = var.tenant_api_keys_json }
       ]
+      secrets = [
+        { name = "REDIS_URL", valueFrom = aws_ssm_parameter.redis_url.arn }
+      ]
     }
   ])
 
   tags = local.tags
+
+  depends_on = [aws_iam_role_policy.task_execution_redis_url]
 }
 
 resource "aws_ecs_task_definition" "worker" {
@@ -689,7 +647,6 @@ resource "aws_ecs_task_definition" "worker" {
       }
 
       environment = [
-        { name = "REDIS_URL", value = local.redis_url },
         { name = "JOB_QUEUE_NAME", value = var.job_queue_name },
         { name = "JOB_TTL_SECONDS", value = tostring(var.job_ttl_seconds) },
         { name = "WORKER_CONCURRENCY", value = tostring(var.worker_concurrency) },
@@ -724,11 +681,17 @@ resource "aws_ecs_task_definition" "worker" {
         { name = "OTEL_SERVICE_NAME", value = var.worker_otel_service_name },
         { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = var.otel_exporter_otlp_endpoint }
       ]
+      secrets = [
+        { name = "REDIS_URL", valueFrom = aws_ssm_parameter.redis_url.arn }
+      ]
     }
   ])
 
-  depends_on = [aws_iam_role_policy.worker_dispatch]
-  tags       = local.tags
+  depends_on = [
+    aws_iam_role_policy.task_execution_redis_url,
+    aws_iam_role_policy.worker_dispatch
+  ]
+  tags = local.tags
 }
 
 resource "aws_ecs_task_definition" "runner" {
@@ -780,10 +743,15 @@ resource "aws_ecs_task_definition" "runner" {
         { name = "RESULT_BACKEND", value = "redis" },
         { name = "AUDIT_STREAM_KEY", value = var.audit_stream_key }
       ]
+      secrets = [
+        { name = "REDIS_URL", valueFrom = aws_ssm_parameter.redis_url.arn }
+      ]
     }
   ])
 
   tags = merge(local.tags, { ComputeTier = each.key })
+
+  depends_on = [aws_iam_role_policy.task_execution_redis_url]
 }
 
 resource "aws_ecs_service" "api" {
@@ -793,15 +761,15 @@ resource "aws_ecs_service" "api" {
   desired_count   = var.api_desired_count
   launch_type     = "FARGATE"
 
-  # Keep the single-task public API available during Fargate platform refreshes.
+  # Keep the single-task API available during Fargate platform refreshes.
   deployment_minimum_healthy_percent = 100
   deployment_maximum_percent         = 200
   enable_execute_command             = true
 
-  load_balancer {
-    target_group_arn = aws_lb_target_group.api.arn
-    container_name   = "api"
-    container_port   = 8080
+  service_registries {
+    registry_arn   = aws_service_discovery_service.api.arn
+    container_name = "api"
+    container_port = 8080
   }
 
   network_configuration {
@@ -810,8 +778,13 @@ resource "aws_ecs_service" "api" {
     assign_public_ip = true
   }
 
-  depends_on = [aws_lb_listener.api_http]
-  tags       = local.tags
+  tags = local.tags
+
+  lifecycle {
+    # The sleep controller owns the runtime desired count. Terraform still
+    # applies api_desired_count when the service is first created.
+    ignore_changes = [desired_count]
+  }
 }
 
 resource "aws_ecs_service" "worker" {
@@ -889,17 +862,21 @@ resource "aws_ecs_task_definition" "dlq_replay" {
       }
 
       environment = [
-        { name = "REDIS_URL", value = local.redis_url },
         { name = "JOB_QUEUE_NAME", value = var.job_queue_name },
         { name = "DLQ_QUEUE_NAME", value = var.dlq_queue_name },
         { name = "QUEUE_JOB_ATTEMPTS", value = tostring(var.queue_job_attempts) },
         { name = "QUEUE_RETRY_BACKOFF_MS", value = tostring(var.queue_retry_backoff_ms) },
         { name = "JOB_TTL_SECONDS", value = tostring(var.job_ttl_seconds) }
       ]
+      secrets = [
+        { name = "REDIS_URL", valueFrom = aws_ssm_parameter.redis_url.arn }
+      ]
     }
   ])
 
   tags = local.tags
+
+  depends_on = [aws_iam_role_policy.task_execution_redis_url]
 }
 
 resource "aws_iam_role" "events_invoke_ecs" {
@@ -941,13 +918,17 @@ resource "aws_iam_role_policy" "events_invoke_ecs" {
 }
 
 resource "aws_cloudwatch_event_rule" "dlq_replay" {
+  count = var.enable_scheduled_dlq_replay ? 1 : 0
+
   name                = "${local.name_prefix}-dlq-replay"
   schedule_expression = var.dlq_replay_schedule_expression
   tags                = local.tags
 }
 
 resource "aws_cloudwatch_event_target" "dlq_replay" {
-  rule     = aws_cloudwatch_event_rule.dlq_replay.name
+  count = var.enable_scheduled_dlq_replay ? 1 : 0
+
+  rule     = aws_cloudwatch_event_rule.dlq_replay[0].name
   role_arn = aws_iam_role.events_invoke_ecs.arn
   arn      = aws_ecs_cluster.this.arn
 
@@ -965,13 +946,17 @@ resource "aws_cloudwatch_event_target" "dlq_replay" {
 }
 
 resource "aws_cloudwatch_event_rule" "dlq_replay_offpeak" {
+  count = var.enable_scheduled_dlq_replay ? 1 : 0
+
   name                = "${local.name_prefix}-dlq-replay-offpeak"
   schedule_expression = var.dlq_replay_offpeak_schedule_expression
   tags                = local.tags
 }
 
 resource "aws_cloudwatch_event_target" "dlq_replay_offpeak" {
-  rule     = aws_cloudwatch_event_rule.dlq_replay_offpeak.name
+  count = var.enable_scheduled_dlq_replay ? 1 : 0
+
+  rule     = aws_cloudwatch_event_rule.dlq_replay_offpeak[0].name
   role_arn = aws_iam_role.events_invoke_ecs.arn
   arn      = aws_ecs_cluster.this.arn
 

@@ -15,7 +15,8 @@
     "dev:runner": "npm run dev --workspace @ccee/runner",
     "queue:recover": "node scripts/replay-dlq.mjs",
     "lint": "npm run lint --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present"
+    "test": "npm run test --workspaces --if-present && npm run test:infra",
+    "test:infra": "python3 -m unittest discover -s infra/lambda -p 'test_*.py'"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",

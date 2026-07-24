@@ -9,6 +9,7 @@ Secure, multi-tenant, asynchronous code execution platform with Vercel-hosted re
 - Architecture: [`docs/architecture.md`](docs/architecture.md)
 - Security model: [`docs/security.md`](docs/security.md)
 - Scaling model: [`docs/scaling.md`](docs/scaling.md)
+- API compute sleep runbook: [`docs/sleep-mode.md`](docs/sleep-mode.md)
 - Observability: [`docs/observability.md`](docs/observability.md)
 - System design: [`docs/system-design.md`](docs/system-design.md)
 - Human enhancement scaffold: [`docs/enhancement-scaffold.md`](docs/enhancement-scaffold.md)
@@ -40,7 +41,8 @@ Secure, multi-tenant, asynchronous code execution platform with Vercel-hosted re
   - AI-backed analysis mode (`AI_PROVIDER=openai`) with retries/backoff and safe heuristic fallback
 - `apps/frontend`
   - Static recruiter-facing CloudSandbox UI deployed to Vercel
-  - Uses Vercel rewrites as a same-origin HTTPS proxy to the AWS API, avoiding browser mixed-content blocks while keeping backend compute on AWS
+  - Uses the configured API Gateway HTTPS base URL directly; API Gateway enforces CORS and privately proxies to ECS
+  - Performs no AWS requests on page load; authenticated actions wake the API and wait for health before continuing
 - `services/worker`
   - BullMQ queue consumer
   - Async dispatch to local Docker runner or ECS/Fargate runner tasks
@@ -53,7 +55,10 @@ Secure, multi-tenant, asynchronous code execution platform with Vercel-hosted re
 - `packages/common`
   - Shared schemas and key conventions
 - `infra/terraform`
-  - ECS cluster/services, ALB, ElastiCache for Valkey, IAM, security groups
+  - ECS cluster/services, ElastiCache for Valkey, IAM, and security groups
+  - Unified API Gateway HTTP API: Lambda wake route plus a VPC Link/Cloud Map private proxy to ECS
+  - Conservative API scale-to-zero and snapshot-backed ElastiCache hibernation controller
+  - Runtime Redis endpoint distributed to API, worker, runner, and DLQ tasks through encrypted SSM secret injection
 
 ## Secure sandbox controls
 
@@ -85,6 +90,7 @@ Secure, multi-tenant, asynchronous code execution platform with Vercel-hosted re
 
 ## Async architecture
 
+0. The static UI loads without contacting AWS. Before an authenticated action, it wakes the API service and waits for a healthy target.
 1. Client submits job to API.
 2. API validates request, reserves tenant quota, persists job metadata/history, enqueues BullMQ job.
 3. Worker consumes queue job and marks running.
@@ -154,7 +160,7 @@ sequenceDiagram
 
 ## 🛠 Operational Runbook: DLQ Recovery
 
-Failed code execution payloads are automatically routed to the Redis Dead Letter Queue and processed daily via an EventBridge cron schedule at 02:00 AM local time (scheduled in UTC).
+Failed code execution payloads are automatically routed to the Redis Dead Letter Queue. EventBridge replay schedules are optional and must be disabled when ElastiCache hibernation is enabled; manual authenticated replay remains available after wake.
 
 **Manual Override (Break-Glass Command):**
 To manually trigger the DLQ recovery script outside the scheduled maintenance window, run the following transient Fargate task via the AWS CLI:
@@ -311,11 +317,13 @@ All `/v1/*` endpoints are protected by configured auth mode:
 
 The Terraform module provisions:
 
-- ALB + API ECS service
+- API Gateway HTTP API with an authenticated Lambda wake route
+- VPC Link and Cloud Map private integration to the API ECS service
 - Worker ECS service with `EXECUTION_BACKEND=ecs`
 - ECS Application Auto Scaling target tracking on queue depth for worker service
 - Runner task definition
 - ElastiCache for Valkey (TLS, Redis-compatible protocol)
+- Optional snapshot-backed ElastiCache hibernation with a required Terraform ownership handoff
 - IAM + SG boundaries for worker/runner/API/Redis
 - Optional VPC, subnets, NAT, and RDS PostgreSQL
 

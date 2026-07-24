@@ -36,7 +36,6 @@ const buildContainerEnvironment = (config: WorkerConfig, payload: QueueJobPayloa
   purchaseOption: RunnerPurchaseOption;
 }): Array<{ name: string; value: string }> => [
   { name: "RESULT_BACKEND", value: "redis" },
-  { name: "REDIS_URL", value: config.redisUrl },
   { name: "AUDIT_STREAM_KEY", value: config.auditStreamKey },
   { name: "JOB_DATA_B64", value: Buffer.from(JSON.stringify(payload), "utf8").toString("base64") },
   { name: "MAX_STDIO_BYTES", value: String(config.maxStdioBytes) },

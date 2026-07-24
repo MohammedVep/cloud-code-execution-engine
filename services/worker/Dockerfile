@@ -19,6 +19,7 @@ COPY --from=builder /app/packages/common/dist ./packages/common/dist
 COPY --from=builder /app/packages/common/package.json ./packages/common/package.json
 COPY --from=builder /app/services/worker/dist ./services/worker/dist
 COPY --from=builder /app/services/worker/package.json ./services/worker/package.json
+COPY scripts/replay-dlq.mjs ./scripts/replay-dlq.mjs
 
 RUN npm install --omit=dev --workspace @ccee/common --workspace @ccee/worker
 RUN chmod -R a+rX /app

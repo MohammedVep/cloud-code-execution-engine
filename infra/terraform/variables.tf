@@ -17,13 +17,19 @@ variable "vpc_id" {
 }
 
 variable "public_subnet_ids" {
-  description = "Subnets for internet-facing ALB and API tasks (ignored when create_vpc=true)"
+  description = "Subnets for API tasks that retain outbound public connectivity (ignored when create_vpc=true)"
   type        = list(string)
   default     = []
 }
 
 variable "private_subnet_ids" {
   description = "Subnets for worker, runner, and ElastiCache (ignored when create_vpc=true)"
+  type        = list(string)
+  default     = []
+}
+
+variable "api_vpc_link_subnet_ids" {
+  description = "Subnets for the API Gateway VPC Link; use AZs supported by VPC Link V2. Defaults to private_subnet_ids."
   type        = list(string)
   default     = []
 }
@@ -86,9 +92,86 @@ variable "api_memory" {
 }
 
 variable "api_desired_count" {
-  description = "API service task count"
+  description = "Initial API service task count; the sleep controller owns runtime desired-count changes"
   type        = number
   default     = 1
+}
+
+variable "api_sleep_idle_timeout_seconds" {
+  description = "Seconds without a wake, API Gateway request, worker task, or positive queue scale signal before the API service sleeps"
+  type        = number
+  default     = 900
+
+  validation {
+    condition     = var.api_sleep_idle_timeout_seconds >= 300 && var.api_sleep_idle_timeout_seconds <= 86400 && floor(var.api_sleep_idle_timeout_seconds) == var.api_sleep_idle_timeout_seconds
+    error_message = "api_sleep_idle_timeout_seconds must be a whole number between 300 and 86400."
+  }
+}
+
+variable "api_sleep_check_schedule_expression" {
+  description = "EventBridge schedule expression for API idle checks"
+  type        = string
+  default     = "rate(5 minutes)"
+
+  validation {
+    condition     = can(regex("^(rate|cron)\\(", var.api_sleep_check_schedule_expression))
+    error_message = "api_sleep_check_schedule_expression must be an EventBridge rate(...) or cron(...) expression."
+  }
+}
+
+variable "api_wake_throttle_burst_limit" {
+  description = "API Gateway burst limit for the POST /wake route"
+  type        = number
+  default     = 5
+
+  validation {
+    condition     = var.api_wake_throttle_burst_limit >= 1 && var.api_wake_throttle_burst_limit <= 5000 && floor(var.api_wake_throttle_burst_limit) == var.api_wake_throttle_burst_limit
+    error_message = "api_wake_throttle_burst_limit must be a whole number between 1 and 5000."
+  }
+}
+
+variable "api_wake_throttle_rate_limit" {
+  description = "API Gateway steady-state requests per second limit for the POST /wake route"
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.api_wake_throttle_rate_limit > 0 && var.api_wake_throttle_rate_limit <= 10000
+    error_message = "api_wake_throttle_rate_limit must be greater than 0 and no more than 10000."
+  }
+}
+
+variable "api_backend_throttle_burst_limit" {
+  description = "API Gateway burst limit for proxied backend routes"
+  type        = number
+  default     = 100
+
+  validation {
+    condition     = var.api_backend_throttle_burst_limit >= 1 && var.api_backend_throttle_burst_limit <= 5000 && floor(var.api_backend_throttle_burst_limit) == var.api_backend_throttle_burst_limit
+    error_message = "api_backend_throttle_burst_limit must be a whole number between 1 and 5000."
+  }
+}
+
+variable "api_backend_throttle_rate_limit" {
+  description = "API Gateway steady-state requests per second limit for proxied backend routes"
+  type        = number
+  default     = 50
+
+  validation {
+    condition     = var.api_backend_throttle_rate_limit > 0 && var.api_backend_throttle_rate_limit <= 10000
+    error_message = "api_backend_throttle_rate_limit must be greater than 0 and no more than 10000."
+  }
+}
+
+variable "api_sleep_controller_reserved_concurrency" {
+  description = "Reserved Lambda concurrency for serialized wake and cache lifecycle transitions"
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.api_sleep_controller_reserved_concurrency == 1
+    error_message = "api_sleep_controller_reserved_concurrency must be 1 so cache lifecycle transitions are serialized."
+  }
 }
 
 variable "cors_allowed_origins" {
@@ -375,6 +458,12 @@ variable "dlq_replay_offpeak_schedule_expression" {
   default     = "cron(0 7 * * ? *)"
 }
 
+variable "enable_scheduled_dlq_replay" {
+  description = "Whether EventBridge launches scheduled DLQ replay tasks; the task definition and manual admin replay path remain available when false"
+  type        = bool
+  default     = true
+}
+
 variable "node_options" {
   description = "Node.js runtime options for V8 tuning"
   type        = string
@@ -591,6 +680,7 @@ variable "tenant_api_keys_json" {
   description = "JSON map of API keys to tenant quota policy"
   type        = string
   default     = "{\"dev-local-key\":{\"tenantId\":\"tenant-dev\",\"maxConcurrentJobs\":5,\"maxDailyJobs\":1000}}"
+  sensitive   = true
 }
 
 variable "tenant_policies_json" {
@@ -603,6 +693,7 @@ variable "admin_api_keys_json" {
   description = "JSON array of API keys allowed to access admin observability endpoints"
   type        = string
   default     = "[\"dev-local-key\"]"
+  sensitive   = true
 }
 
 variable "admin_burst_max" {
@@ -639,6 +730,23 @@ variable "redis_num_cache_clusters" {
   description = "Number of Redis-compatible cache clusters (1 for dev, >=2 for failover)"
   type        = number
   default     = 1
+}
+
+variable "redis_hibernation_enabled" {
+  description = "Hand cache ownership to the sleep controller, which snapshots and deletes it after all safety gates pass"
+  type        = bool
+  default     = false
+}
+
+variable "redis_hibernation_snapshot_retention" {
+  description = "Number of available controller-owned cache snapshots to retain"
+  type        = number
+  default     = 3
+
+  validation {
+    condition     = var.redis_hibernation_snapshot_retention >= 2 && var.redis_hibernation_snapshot_retention <= 10 && floor(var.redis_hibernation_snapshot_retention) == var.redis_hibernation_snapshot_retention
+    error_message = "redis_hibernation_snapshot_retention must be a whole number between 2 and 10."
+  }
 }
 
 variable "redis_auth_token" {

@@ -124,6 +124,18 @@ resource "aws_vpc_endpoint" "monitoring" {
   tags = local.tags
 }
 
+resource "aws_vpc_endpoint" "ssm" {
+  count               = var.enable_vpc_endpoints ? 1 : 0
+  vpc_id              = local.vpc_id
+  service_name        = "com.amazonaws.${var.aws_region}.ssm"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = local.endpoint_subnet_ids
+  security_group_ids  = [aws_security_group.vpc_endpoints[0].id]
+  private_dns_enabled = true
+
+  tags = local.tags
+}
+
 resource "aws_vpc_endpoint" "s3" {
   count             = var.enable_vpc_endpoints && length(local.endpoint_route_table_ids) > 0 ? 1 : 0
   vpc_id            = local.vpc_id
