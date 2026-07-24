@@ -26,11 +26,11 @@
 - `audit:events`: append-only stream of security and lifecycle events.
 
 ## Tradeoffs
-- Redis-only persistence keeps the stack fast and simple but limits deep analytics and long-term storage durability.
+- Valkey-only persistence keeps the stack fast and simple but limits deep analytics and long-term storage durability.
 - Polling simplifies client integration but is less efficient than push/WebSocket streams.
 - Task-per-execution isolation improves security but increases startup overhead.
 - SSE gives real-time updates with less frontend complexity than WebSockets, but remains one-way from API to browser.
-- Redis audit-derived metrics are lightweight for the portfolio workload; deep analytics should move to a durable warehouse or time-series store.
+- Valkey audit-derived metrics are lightweight for the portfolio workload; deep analytics should move to a durable warehouse or time-series store.
 
 ## Bottlenecks
 - Worker cold starts in ECS/Fargate.

@@ -987,7 +987,7 @@ app.get("/v1/runtimes", async (request, reply) =>
     traceId: request.traceId,
     runtimes: LANGUAGE_RUNTIME_CATALOG,
     isolation: {
-      queue: "BullMQ/Redis asynchronous dispatch",
+      queue: "BullMQ/Valkey asynchronous dispatch",
       workerFleet: "Horizontally scalable worker service dispatching isolated runner tasks",
       container: "Non-root container process with CPU, memory, wall-clock, process-count, file-size, stdout/stderr, and filesystem controls",
       cloud: "ECS/Fargate runner tasks run on AWS-managed Firecracker-backed Fargate isolation"
@@ -1003,7 +1003,7 @@ app.get("/v1/observability/summary", async (request, reply) => {
     metrics: snapshot,
     architecture: {
       controlPlane: "Fastify API",
-      queue: "BullMQ on Redis",
+      queue: "BullMQ on Valkey",
       workers: "Worker fleet with queue-depth autoscaling",
       execution: "Ephemeral per-job runner containers/tasks",
       observability: ["OpenTelemetry traces", "Prometheus /metrics", "Grafana dashboard provisioning"]
